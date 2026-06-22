@@ -25,7 +25,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   path: ^1.9.0
   path_provider: ^2.1.4
-  screen_brightness: ^2.1.7
+  screen_brightness: ^2.1.11
   share_plus: ^10.1.4
 
 dev_dependencies:
