@@ -1,5 +1,10 @@
 # Medio Community
 
+[![CI](https://github.com/blueone-6/medio/actions/workflows/ci.yml/badge.svg)](https://github.com/blueone-6/medio/actions/workflows/ci.yml)
+[![Release](https://github.com/blueone-6/medio/actions/workflows/release.yml/badge.svg)](https://github.com/blueone-6/medio/actions/workflows/release.yml)
+[![License](https://img.shields.io/github/license/blueone-6/medio)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/blueone-6/medio)](https://github.com/blueone-6/medio/releases)
+
 > 跨平台 Emby 媒体浏览客户端 —— Windows Desktop / Android Phone / Android TV 三端通用
 
 ## 功能亮点
@@ -70,3 +75,7 @@ Bundled third-party software and licenses are listed in [THIRD_PARTY_NOTICES.md]
 ## License
 
 [GPL-3.0-or-later](LICENSE)
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).

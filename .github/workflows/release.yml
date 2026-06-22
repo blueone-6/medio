@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows
+        run: flutter build windows --release
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          $staging = "medio-community-$version-windows-x64"
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          Copy-Item -Path "build\windows\x64\runner\Release\*" -Destination $staging -Recurse
+          Compress-Archive -Path "$staging\*" -DestinationPath "$staging.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: medio-community-*.zip
+
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Rename APK
+        run: |
+          tag="${{ github.ref_name }}"
+          version="${tag#v}"
+          cp build/app/outputs/flutter-apk/app-release.apk "medio-community-$version-android.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: medio-community-*.apk
+
+  release:
+    name: Publish Release
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.ref_name }}"
+          gh release create "$tag" \
+            --generate-notes \
+            --title "$tag" \
+            windows-x64/medio-community-*.zip \
+            android-apk/medio-community-*.apk
