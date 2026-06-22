@@ -6,7 +6,6 @@ import 'package:media_kit/src/player/native/player/real.dart' as native;
 // ignore: implementation_imports
 import 'package:media_kit_video/src/utils/query_decoders.dart';
 
-import '../layout/platform_layout.dart';
 import '../logging/app_log.dart';
 
 /// Logs whether libavcodec exposes PGS / DVD sub decoders in this libmpv build.
