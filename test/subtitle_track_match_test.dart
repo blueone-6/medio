@@ -37,7 +37,7 @@ void main() {
     ];
 
     test('maps Chinese Simplified (SUBRIP) to Simplified text track', () {
-      final option = EmbySubtitleOption(
+      const option = EmbySubtitleOption(
         index: 11,
         label: 'Chinese Simplified (SUBRIP)',
         streamUrl: 'http://example/sub/11.srt',
@@ -49,7 +49,7 @@ void main() {
     });
 
     test('maps Chinese Traditional (SUBRIP) to Traditional text track', () {
-      final option = EmbySubtitleOption(
+      const option = EmbySubtitleOption(
         index: 12,
         label: 'Chinese Traditional (SUBRIP)',
         streamUrl: 'http://example/sub/12.srt',
@@ -60,7 +60,7 @@ void main() {
     });
 
     test('does not map 默认 PGSSUB to first mpv default PGS track by label alone', () {
-      final option = EmbySubtitleOption(
+      const option = EmbySubtitleOption(
         index: 14,
         label: 'Chinese (默认 PGSSUB)',
         streamUrl: 'http://example/sub/14.pgs',
@@ -83,7 +83,7 @@ void main() {
     });
 
     test('textMuxedFallbackForPgs picks Simplified for PGSSUB simplified label', () {
-      final option = EmbySubtitleOption(
+      const option = EmbySubtitleOption(
         index: 4,
         label: 'Chinese Simplified (PGSSUB)',
         streamUrl: 'http://example/sub/4.pgs',

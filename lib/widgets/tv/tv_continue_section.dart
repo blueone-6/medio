@@ -489,7 +489,7 @@ class _TvContinueHero extends StatelessWidget {
                               : HomeLayout.pcHeroMetaProgressGap,
                         ),
                         ConstrainedBox(
-                          constraints: BoxConstraints(
+                          constraints: const BoxConstraints(
                             maxWidth: HomeLayout.pcHeroProgressMaxWidth,
                           ),
                           child: _TvSecondaryProgressBar(value: fraction),

@@ -1,5 +1,6 @@
 @Tags(['integration'])
 @TestOn('windows')
+library;
 
 import 'dart:convert';
 import 'dart:io';

@@ -115,7 +115,7 @@ class _TvPosterTitleOverlay extends StatelessWidget {
       bottom: 0,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.vertical(
+          borderRadius: const BorderRadius.vertical(
             bottom: Radius.circular(HomeLayout.posterRadius),
           ),
           gradient: LinearGradient(

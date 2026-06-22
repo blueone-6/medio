@@ -115,7 +115,7 @@ class AboutScreen extends StatelessWidget {
 
             ),
 
-            child: SettingsListTile(
+            child: const SettingsListTile(
 
               icon: Icons.tag_outlined,
 

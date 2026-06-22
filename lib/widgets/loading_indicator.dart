@@ -173,13 +173,13 @@ class _HomeFeedSkeleton extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: HomeLayout.horizontalMargin),
-            child: const Skeleton(height: 44, borderRadius: AppRadius.mdR),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: HomeLayout.horizontalMargin),
+            child: Skeleton(height: 44, borderRadius: AppRadius.mdR),
           ),
           const SizedBox(height: AppSpacing.lg),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: HomeLayout.horizontalMargin),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: HomeLayout.horizontalMargin),
             child: AspectRatio(
               aspectRatio: 16 / 9,
               child: Skeleton(borderRadius: HomeLayout.cardRadiusR),
@@ -203,9 +203,9 @@ class _HomeFeedSkeleton extends StatelessWidget {
             ),
           ),
           const SizedBox(height: HomeLayout.sectionHeaderGap),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: HomeLayout.horizontalMargin),
-            child: const Skeleton(height: 16, width: 96, borderRadius: AppRadius.xsR),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: HomeLayout.horizontalMargin),
+            child: Skeleton(height: 16, width: 96, borderRadius: AppRadius.xsR),
           ),
           const SizedBox(height: HomeLayout.sectionHeaderGap),
           const LoadingIndicator.posterRow(),

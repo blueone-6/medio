@@ -110,20 +110,20 @@ class PosterSkeleton extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final poster = const Skeleton(borderRadius: AppRadius.mdR);
+        const poster = Skeleton(borderRadius: AppRadius.mdR);
         if (!showTitle) {
           return AspectRatio(aspectRatio: aspectRatio, child: poster);
         }
 
         final titleLines = homeRecommendCaption
             ? [
-                SizedBox(height: HomeLayout.posterTitleGap),
-                Skeleton(
+                const SizedBox(height: HomeLayout.posterTitleGap),
+                const Skeleton(
                   height: HomeLayout.posterTitleFontSize *
                       HomeLayout.posterTitleLineHeight,
                   borderRadius: AppRadius.xsR,
                 ),
-                Skeleton(
+                const Skeleton(
                   height: HomeLayout.posterSubtitleFontSize *
                       HomeLayout.posterSubtitleLineHeight,
                   borderRadius: AppRadius.xsR,

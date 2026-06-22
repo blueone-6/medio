@@ -31,7 +31,7 @@ class ThemeSettingsScreen extends ConsumerWidget {
     final variants = AppThemeVariant.values
         .where((v) => v != AppThemeVariant.system)
         .toList();
-    final brightnessOptions = AppThemeBrightness.values;
+    const brightnessOptions = AppThemeBrightness.values;
 
     return TvScreenShell(
       title: '主题设置',
@@ -102,7 +102,7 @@ class ThemeSettingsScreen extends ConsumerWidget {
         .where((v) => v != AppThemeVariant.system)
         .toList();
 
-    final brightnessOptions = AppThemeBrightness.values;
+    const brightnessOptions = AppThemeBrightness.values;
 
     return Scaffold(
       appBar: AppBar(title: const Text('主题设置')),
@@ -139,22 +139,24 @@ class ThemeSettingsScreen extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: AppSpacing.lg),
-          SettingsListGroup(
-            title: '亮度模式',
-            children: [
-              for (final b in brightnessOptions)
-                RadioListTile<AppThemeBrightness>(
-                  value: b,
-                  groupValue: currentBrightness,
-                  title: Text(b.label),
-                  activeColor: Theme.of(context).colorScheme.primary,
-                  onChanged: (val) async {
-                    if (val == null) return;
-                    ref.read(themeBrightnessProvider.notifier).state = val;
-                    await settings.setThemeBrightness(val);
-                  },
-                ),
-            ],
+          RadioGroup<AppThemeBrightness>(
+            groupValue: currentBrightness,
+            onChanged: (val) async {
+              if (val == null) return;
+              ref.read(themeBrightnessProvider.notifier).state = val;
+              await settings.setThemeBrightness(val);
+            },
+            child: SettingsListGroup(
+              title: '亮度模式',
+              children: [
+                for (final b in brightnessOptions)
+                  RadioListTile<AppThemeBrightness>(
+                    value: b,
+                    title: Text(b.label),
+                    activeColor: Theme.of(context).colorScheme.primary,
+                  ),
+              ],
+            ),
           ),
           const SizedBox(height: AppSpacing.xl),
         ],

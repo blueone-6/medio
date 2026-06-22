@@ -150,7 +150,7 @@ void main() {
       const mediaSourceId = 'mediasource_2465';
       const server = 'https://media.example.com';
 
-      final info = EmbyPlaybackInfo(
+      const info = EmbyPlaybackInfo(
         playSessionId: 'session-1',
         mediaSourceId: mediaSourceId,
         streamUrl:
@@ -179,7 +179,7 @@ void main() {
       const server = 'https://media.example.com';
       const ticks = 1253978370;
 
-      final info = EmbyPlaybackInfo(
+      const info = EmbyPlaybackInfo(
         playSessionId: 'session-1',
         mediaSourceId: mediaSourceId,
         streamUrl:
@@ -205,7 +205,7 @@ void main() {
       const embyStreamUrl =
           'https://media.example.com/emby/Videos/2465/stream?MediaSourceId=mediasource_2465&Static=true&X-Emby-Token=tok';
 
-      final info = EmbyPlaybackInfo(
+      const info = EmbyPlaybackInfo(
         playSessionId: 'session-1',
         mediaSourceId: 'mediasource_2465',
         streamUrl: embyStreamUrl,
@@ -222,7 +222,7 @@ void main() {
       const server = 'http://192.168.1.10:8096';
       const cdn = 'https://cdn.example.com/movie.mkv';
 
-      final info = EmbyPlaybackInfo(
+      const info = EmbyPlaybackInfo(
         playSessionId: 's',
         mediaSourceId: mediaSourceId,
         streamUrl: cdn,
@@ -244,7 +244,7 @@ void main() {
       const server = 'http://192.168.1.10:8096';
       const ticks = 6000000000; // 10 min
 
-      final info = EmbyPlaybackInfo(
+      const info = EmbyPlaybackInfo(
         playSessionId: 's',
         mediaSourceId: mediaSourceId,
         streamUrl: 'https://cdn.example.com/movie.mkv',

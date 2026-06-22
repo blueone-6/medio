@@ -23,9 +23,9 @@ void main() {
   group('PlayerGestureLayer - pass-through on non-Android', () {
     testWidgets('renders child directly', (tester) async {
       await tester.pumpWidget(
-        MaterialApp(
+        const MaterialApp(
           home: PlayerGestureLayer(
-            child: const Text('video'),
+            child: Text('video'),
           ),
         ),
       );

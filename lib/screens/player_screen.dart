@@ -1266,10 +1266,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }) async {
     final emby = _emby;
     if (emby == null) return;
-    final picked = null;
+    const picked = null;
     if (!mounted || _bootstrapCancelled) return;
     final openUrl = picked ?? embyStreamUrl;
-    final mode = picked != null ? 'cdn_direct' : 'emby_307';
+    const mode = picked != null ? 'cdn_direct' : 'emby_307';
     final headers = externalCdnPlaybackHttpHeaders();
 
     AppLog.instance.i(

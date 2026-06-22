@@ -164,7 +164,7 @@ class _PcContinueWatchingSkeleton extends StatelessWidget {
         if (!wide) {
           return Column(
             children: [
-              AspectRatio(
+              const AspectRatio(
                 aspectRatio: HomeLayout.pcHeroAspectRatio,
                 child: Skeleton(borderRadius: HomeLayout.cardRadiusR),
               ),
@@ -186,20 +186,20 @@ class _PcContinueWatchingSkeleton extends StatelessWidget {
 
         return SizedBox(
           height: rowHeight,
-          child: Row(
+          child: const Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Expanded(
+              Expanded(
                 flex: 2,
                 child: Skeleton(borderRadius: HomeLayout.cardRadiusR),
               ),
-              const SizedBox(width: gap),
+              SizedBox(width: gap),
               Expanded(
                 child: Column(
                   children: [
-                    const Expanded(child: Skeleton(borderRadius: AppRadius.mdR)),
-                    const SizedBox(height: gap),
-                    const Expanded(child: Skeleton(borderRadius: AppRadius.mdR)),
+                    Expanded(child: Skeleton(borderRadius: AppRadius.mdR)),
+                    SizedBox(height: gap),
+                    Expanded(child: Skeleton(borderRadius: AppRadius.mdR)),
                   ],
                 ),
               ),
@@ -508,7 +508,7 @@ class _PcHeroGlassButton extends StatelessWidget {
               ? cs.onSurface.withValues(alpha: 0.1)
               : Colors.white.withValues(alpha: 0.12),
           child: ConstrainedBox(
-            constraints: BoxConstraints(
+            constraints: const BoxConstraints(
               minHeight: HomeLayout.pcHeroPlayIconSize + HomeLayout.pcActionButtonVPad * 2,
             ),
             child: Padding(
