@@ -89,11 +89,13 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         maxDays: maxDays == 1 ? 1 : null,
       );
       if (!mounted) return;
-      await Share.shareXFiles(
-        [XFile(file.path, mimeType: 'text/plain')],
-        subject: 'Media Client diagnostics',
-        text: 'Media Client 诊断日志导出',
-        sharePositionOrigin: origin,
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'text/plain')],
+          subject: 'Media Client diagnostics',
+          text: 'Media Client 诊断日志导出',
+          sharePositionOrigin: origin,
+        ),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -116,11 +118,13 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     try {
       final file = await CrashReporter.instance.buildShareFile();
       if (!mounted) return;
-      await Share.shareXFiles(
-        [XFile(file.path, mimeType: 'text/plain')],
-        subject: 'Media Client crash logs',
-        text: 'Media Client 崩溃日志导出',
-        sharePositionOrigin: origin,
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'text/plain')],
+          subject: 'Media Client crash logs',
+          text: 'Media Client 崩溃日志导出',
+          sharePositionOrigin: origin,
+        ),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

@@ -65,18 +65,21 @@ class HomeHubSectionListState {
   static const _sentinel = Object();
 }
 
-class HomeHubSectionListNotifier extends AutoDisposeFamilyNotifier<HomeHubSectionListState, String> {
+class HomeHubSectionListNotifier extends Notifier<HomeHubSectionListState> {
+  HomeHubSectionListNotifier(this.section);
+
   static const _pageSize = 48;
   static const _prefetchMinItems = 36;
   static const _prefetchMaxExtraPages = 4;
 
+  final String section;
   final Set<String> _seen = {};
   List<String> _orderedSeeds = [];
   int _libIndex = 0;
   int _startIndex = 0;
 
   @override
-  HomeHubSectionListState build(String section) {
+  HomeHubSectionListState build() {
     Future.microtask(refresh);
     return const HomeHubSectionListState(isLoading: true);
   }
@@ -87,7 +90,7 @@ class HomeHubSectionListNotifier extends AutoDisposeFamilyNotifier<HomeHubSectio
     _startIndex = 0;
     _orderedSeeds = [];
     state = const HomeHubSectionListState(isLoading: true);
-    if (arg == 'recent') {
+    if (section == 'recent') {
       await _loadRecent();
       return;
     }
@@ -96,7 +99,7 @@ class HomeHubSectionListNotifier extends AutoDisposeFamilyNotifier<HomeHubSectio
   }
 
   Future<void> loadMore() async {
-    if (arg == 'recent') return;
+    if (section == 'recent') return;
     if (state.isLoading || state.isLoadingMore || !state.hasMore) return;
     state = state.copyWith(isLoadingMore: true, error: null);
     await _loadNextBatch(append: true);
@@ -137,11 +140,11 @@ class HomeHubSectionListNotifier extends AutoDisposeFamilyNotifier<HomeHubSectio
           );
           return;
         }
-        _orderedSeeds = orderedSeedIdsForHomeSection(libs, seeds, arg);
+        _orderedSeeds = orderedSeedIdsForHomeSection(libs, seeds, section);
       }
 
-      final include = arg == 'movie' ? 'Movie' : 'Series';
-      final wantMovie = arg == 'movie';
+      final include = section == 'movie' ? 'Movie' : 'Series';
+      final wantMovie = section == 'movie';
       final api = ref.read(embyServiceProvider);
       final batch = <EmbyMediaItem>[];
 

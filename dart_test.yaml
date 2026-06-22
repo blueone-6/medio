@@ -1,0 +1,9 @@
+tags:
+  integration:
+    skip: "Integration tests require native libs & live Emby server. Run with: flutter test --preset integration"
+
+presets:
+  integration:
+    tags:
+      integration:
+        skip: false

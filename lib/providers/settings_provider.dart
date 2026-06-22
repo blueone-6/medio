@@ -39,11 +39,35 @@ final playerServiceProvider = Provider<PlayerService>((ref) {
 // ── 主题 Providers ──
 
 /// 当前主题配色方案（非 system 时有效）。
-final themeVariantProvider = StateProvider<AppThemeVariant>((ref) {
-  return ref.watch(settingsServiceProvider).themeVariant;
-});
+class ThemeVariantNotifier extends Notifier<AppThemeVariant> {
+  @override
+  AppThemeVariant build() {
+    return ref.watch(settingsServiceProvider).themeVariant;
+  }
+
+  void set(AppThemeVariant variant) {
+    state = variant;
+  }
+}
+
+final themeVariantProvider =
+    NotifierProvider<ThemeVariantNotifier, AppThemeVariant>(
+  ThemeVariantNotifier.new,
+);
 
 /// 当前主题亮度模式。
-final themeBrightnessProvider = StateProvider<AppThemeBrightness>((ref) {
-  return ref.watch(settingsServiceProvider).themeBrightness;
-});
+class ThemeBrightnessNotifier extends Notifier<AppThemeBrightness> {
+  @override
+  AppThemeBrightness build() {
+    return ref.watch(settingsServiceProvider).themeBrightness;
+  }
+
+  void set(AppThemeBrightness brightness) {
+    state = brightness;
+  }
+}
+
+final themeBrightnessProvider =
+    NotifierProvider<ThemeBrightnessNotifier, AppThemeBrightness>(
+  ThemeBrightnessNotifier.new,
+);

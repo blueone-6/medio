@@ -63,7 +63,7 @@ class ThemeSettingsScreen extends ConsumerWidget {
                   selected: currentVariant == variants[i],
                   autofocus: i == 0,
                   onActivate: () async {
-                    ref.read(themeVariantProvider.notifier).state = variants[i];
+                    ref.read(themeVariantProvider.notifier).set(variants[i]);
                     await settings.setThemeVariant(variants[i]);
                   },
                 ),
@@ -84,7 +84,7 @@ class ThemeSettingsScreen extends ConsumerWidget {
               title: brightnessOptions[i].label,
               traversalOrder: 10 + i.toDouble(),
               onSelected: (val) async {
-                ref.read(themeBrightnessProvider.notifier).state = val;
+                ref.read(themeBrightnessProvider.notifier).set(val);
                 await settings.setThemeBrightness(val);
               },
             ),
@@ -131,7 +131,7 @@ class ThemeSettingsScreen extends ConsumerWidget {
                   variant: v,
                   selected: selected,
                   onTap: () async {
-                    ref.read(themeVariantProvider.notifier).state = v;
+                    ref.read(themeVariantProvider.notifier).set(v);
                     await settings.setThemeVariant(v);
                   },
                 );
@@ -143,7 +143,7 @@ class ThemeSettingsScreen extends ConsumerWidget {
             groupValue: currentBrightness,
             onChanged: (val) async {
               if (val == null) return;
-              ref.read(themeBrightnessProvider.notifier).state = val;
+              ref.read(themeBrightnessProvider.notifier).set(val);
               await settings.setThemeBrightness(val);
             },
             child: SettingsListGroup(
