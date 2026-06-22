@@ -3,16 +3,27 @@ updates:
   - package-ecosystem: "pub"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
+      interval: "monthly"
+    groups:
+      patch-minor:
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+      major:
+        patterns: ["*"]
+        update-types: ["major"]
+    ignore:
+      - dependency-name: "flutter_riverpod"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "share_plus"
+        update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+      interval: "monthly"
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "chore(ci)"
