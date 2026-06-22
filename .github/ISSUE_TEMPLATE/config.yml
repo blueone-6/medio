@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & Discussions
+    url: https://github.com/blueone-6/medio/discussions
+    about: For questions and general discussion, please use GitHub Discussions.
