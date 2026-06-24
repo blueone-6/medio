@@ -30,20 +30,38 @@
 - **Android Phone**: `medio-community-*.apk`
 - **Android TV**: `medio-community-*.apk`（安装后在 Leanback 主屏显示）
 
+## 开发环境
+
+项目使用 [FVM](https://fvm.app) 锁定 Flutter SDK 版本，确保团队成员使用相同的 SDK。
+
+```bash
+# 1. 安装 FVM（一次性）
+dart pub global activate fvm
+
+# 2. 安装项目锁定的 Flutter 版本
+fvm install
+
+# 3. 之后所有 flutter 命令前加 fvm
+fvm flutter pub get
+fvm flutter run -d windows
+```
+
+> VSCode 安装 FVM 扩展后可自动切换到项目 SDK，终端内直接使用 `flutter` 命令。
+
 ## 编译
 
 ```bash
-flutter pub get
+fvm flutter pub get
 
 # Windows
-flutter run -d windows
+fvm flutter run -d windows
 
 # Android Phone
-flutter run -d android
+fvm flutter run -d android
 
 # Android TV Emulator
-flutter emulators --launch <tv_avd_name>
-flutter run -d emulator-5554
+fvm flutter emulators --launch <tv_avd_name>
+fvm flutter run -d emulator-5554
 ```
 
 ### media_kit 原生库预下载（可选）
