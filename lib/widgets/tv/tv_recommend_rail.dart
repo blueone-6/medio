@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/logging/perf.dart';
@@ -174,7 +173,7 @@ class _TvRecommendRailState extends ConsumerState<TvRecommendRail> {
           controller: _scrollController,
           scrollDirection: Axis.horizontal,
           physics: const ClampingScrollPhysics(),
-          scrollCacheExtent: ScrollCacheExtent.pixels(itemStride * 2),
+          cacheExtent: itemStride * 2,
           padding: EdgeInsets.only(right: itemFocusMargin),
           itemCount: visible,
           separatorBuilder: (_, __) => const SizedBox(width: TvHomeLayout.railGap),

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 
 import '../../models/emby/emby_media_item.dart';
 import '../../services/emby_service.dart';
@@ -147,7 +146,7 @@ class _TvLibraryBrowseGridState extends State<TvLibraryBrowseGrid> {
           return GridView.builder(
             controller: _scrollController,
             padding: EdgeInsets.zero,
-            scrollCacheExtent: ScrollCacheExtent.pixels(layout.rowH),
+            cacheExtent: layout.rowH,
             addAutomaticKeepAlives: true,
             addRepaintBoundaries: true,
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
