@@ -24,6 +24,7 @@ import '../utils/player_route.dart';
 import '../widgets/error_view.dart';
 import '../widgets/loading_indicator.dart';
 import '../widgets/player/player_episode_panel.dart';
+import '../widgets/player/player_top_info.dart';
 import '../widgets/player/tv_exo_player_controls.dart';
 
 /// Android TV playback screen — ExoPlayer (Media3) + SurfaceView.
@@ -704,31 +705,15 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
                   ),
                 ),
                 if (_showChrome && !_loading)
-                  Positioned(
-                    top: 8,
-                    left: 8,
-                    child: SafeArea(
-                      child: Material(
-                        color: const Color(0x99121212),
-                        borderRadius: BorderRadius.circular(12),
-                        clipBehavior: Clip.antiAlias,
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: _leavePlayer,
-                          child: const SizedBox(
-                            width: 40,
-                            height: 40,
-                            child: Center(
-                              child: Icon(
-                                Icons.arrow_back_rounded,
-                                color: Color(0xFFE8E8E8),
-                                size: 22,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
+                  ValueListenableBuilder<bool>(
+                    valueListenable: _episodeListOpenNotifier,
+                    builder: (context, episodeListOpen, _) {
+                      if (episodeListOpen) return const SizedBox.shrink();
+                      return PlayerTopInfo(
+                        title: _currentItem?.name ?? '',
+                        onBack: _leavePlayer,
+                      );
+                    },
                   ),
                 ValueListenableBuilder<bool>(
                   valueListenable: _episodeListOpenNotifier,

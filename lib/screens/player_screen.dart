@@ -44,6 +44,7 @@ import '../widgets/error_view.dart';
 import '../widgets/loading_indicator.dart';
 import '../widgets/player/player_controls.dart';
 import '../widgets/player/player_episode_panel.dart';
+import '../widgets/player/player_top_info.dart';
 import '../widgets/player/player_gesture.dart';
 import '../widgets/player/player_subtitle_style.dart';
 
@@ -2465,31 +2466,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 ValueListenableBuilder<bool>(
                   valueListenable: _episodeListOpenNotifier,
                   builder: (context, episodeListOpen, _) {
-                    if (!_showChrome || episodeListOpen) {
+                    if (!_showChrome || episodeListOpen || _loading) {
                       return const SizedBox.shrink();
                     }
-                    return Positioned(
-                      top: 8,
-                      left: 8,
-                      child: SafeArea(
-                        child: Material(
-                          color: const Color(0x99121212),
-                          borderRadius: BorderRadius.circular(12),
-                          clipBehavior: Clip.antiAlias,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: _leavePlayer,
-                            child: const SizedBox(
-                              width: 40,
-                              height: 40,
-                              child: Center(
-                                child: Icon(Icons.arrow_back_rounded,
-                                    color: Color(0xFFE8E8E8), size: 22),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                    return PlayerTopInfo(
+                      title: _currentItem?.name ?? '',
+                      onBack: _leavePlayer,
                     );
                   },
                 ),
