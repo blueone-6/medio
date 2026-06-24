@@ -33,3 +33,6 @@ Thumbs.db
 # Local scratch / diagnostics
 media_client_diag_*.txt
 errors-*.log
+
+# FVM Version Cache
+.fvm/
