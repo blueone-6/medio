@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,7 +16,6 @@ import '../utils/media_navigation.dart';
 import '../utils/user_facing_error.dart';
 import '../widgets/empty_state_view.dart';
 import '../widgets/error_view.dart';
-import '../widgets/home/glass_surface.dart';
 import '../widgets/home/home_layout.dart';
 import '../widgets/loading_indicator.dart';
 import '../widgets/media_list_tile.dart';
@@ -34,6 +35,9 @@ class SearchScreen extends ConsumerStatefulWidget {
 
 class _SearchScreenState extends ConsumerState<SearchScreen> {
   final _controller = TextEditingController();
+  final _focusNode = FocusNode();
+  var _focused = false;
+  Timer? _debounce;
   String _query = '';
 
   @override
@@ -44,22 +48,38 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       _controller.text = q;
       _query = q;
     }
+    _focusNode.addListener(_onFocusChanged);
+  }
+
+  void _onFocusChanged() {
+    if (!mounted) return;
+    setState(() => _focused = _focusNode.hasFocus);
   }
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _controller.dispose();
+    _focusNode.removeListener(_onFocusChanged);
+    _focusNode.dispose();
     super.dispose();
   }
 
+  void _onSearchChanged(String value) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      final q = value.trim();
+      if (q != _query) {
+        setState(() => _query = q);
+      }
+    });
+  }
+
   void _submitSearch([String? value]) {
+    _debounce?.cancel();
     final q = (value ?? _controller.text).trim();
-    if (q != _query || _controller.text != q) {
-      setState(() {
-        _query = q;
-        _controller.text = q;
-      });
-    } else {
+    if (q != _query) {
       setState(() => _query = q);
     }
   }
@@ -106,37 +126,62 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(
               HomeLayout.horizontalMargin,
-              AppSpacing.md,
+              HomeLayout.searchBarVerticalMargin,
               HomeLayout.horizontalMargin,
-              AppSpacing.md,
+              HomeLayout.searchBarVerticalMargin,
             ),
             child: SizedBox(
               height: HomeLayout.searchBarHeight,
-              child: GlassSurface(
-                borderRadius: AppRadius.pillR,
-                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-                child: Row(
-                  children: [
-                    Icon(Icons.search_rounded, size: 20, color: cs.onSurfaceVariant.withValues(alpha: 0.7)),
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: TextField(
-                        controller: _controller,
-                        decoration: const InputDecoration(
-                          hintText: '搜索电影、剧集…',
-                          border: InputBorder.none,
-                          isDense: true,
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                        textInputAction: TextInputAction.search,
-                        onSubmitted: _submitSearch,
+              child: Material(
+                color: cs.surfaceContainerHigh,
+                shape: RoundedRectangleBorder(
+                  borderRadius: AppRadius.pillR,
+                  side: BorderSide(
+                    color: _focused
+                        ? cs.primary.withValues(alpha: 0.55)
+                        : cs.outlineVariant.withValues(alpha: 0.45),
+                    width: _focused ? 2 : 1,
+                  ),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.search_rounded,
+                        size: 20,
+                        color: _focused
+                            ? cs.primary
+                            : cs.onSurfaceVariant.withValues(alpha: 0.7),
                       ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.search_rounded, size: 22),
-                      onPressed: () => _submitSearch(_controller.text),
-                    ),
-                  ],
+                      const SizedBox(width: AppSpacing.xs),
+                      Expanded(
+                        child: TextField(
+                          controller: _controller,
+                          focusNode: _focusNode,
+                          onChanged: _onSearchChanged,
+                          decoration: InputDecoration(
+                            hintText: '搜索电影、剧集、演员',
+                            hintStyle: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: cs.onSurfaceVariant,
+                                ),
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            disabledBorder: InputBorder.none,
+                            errorBorder: InputBorder.none,
+                            focusedErrorBorder: InputBorder.none,
+                            filled: false,
+                            isDense: true,
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                          textInputAction: TextInputAction.search,
+                          onSubmitted: _submitSearch,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
