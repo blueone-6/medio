@@ -170,7 +170,7 @@ class _InlineSearchField extends StatelessWidget {
     return Focus(
       onFocusChange: onFocusChange,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         child: Row(
           children: [
             Icon(
@@ -199,19 +199,24 @@ class _InlineSearchField extends StatelessWidget {
                   isDense: true,
                   hintText: hintText,
                   hintStyle: HomeTypography.bodyMd(cs.onSurfaceVariant),
-                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  contentPadding: EdgeInsets.zero,
                 ),
               ),
             ),
             if (hasText)
-              IconButton(
-                tooltip: '清空搜索',
-                onPressed: onClear,
-                icon: const Icon(Icons.close_rounded),
-                color: cs.onSurfaceVariant,
-                iconSize: 18,
-                visualDensity: VisualDensity.compact,
-                splashRadius: 18,
+              GestureDetector(
+                onTap: onClear,
+                child: Tooltip(
+                  message: '清空搜索',
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: AppSpacing.xs),
+                    child: Icon(
+                      Icons.close_rounded,
+                      size: 16,
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+                ),
               ),
           ],
         ),
