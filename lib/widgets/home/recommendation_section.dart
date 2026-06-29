@@ -64,8 +64,8 @@ class _RecommendationSectionState extends ConsumerState<RecommendationSection> {
       builder: (context, constraints) {
         final cols =
             widget.crossAxisCount ?? (constraints.maxWidth >= 600 ? 3 : 2);
-        // 与 _buildRecommendData 的 12 项展示对齐，避免切换 filter 时骨架行数与实际不一致造成跳动。
-        final placeholders = (12 / cols).ceil() * cols;
+        // 与 _buildRecommendData 的 30 项展示对齐，避免切换 filter 时骨架行数与实际不一致造成跳动。
+        final placeholders = (30 / cols).ceil() * cols;
         return LoadingIndicator.posterGrid(
           homeRecommendStyle: true,
           pcRecommendStyle: widget.usePcSectionTitle,
@@ -114,7 +114,7 @@ class _RecommendationSectionState extends ConsumerState<RecommendationSection> {
         final cols =
             widget.crossAxisCount ?? (constraints.maxWidth >= 600 ? 3 : 2);
         return _RecommendGrid(
-          items: items.take(12).toList(),
+          items: items.take(30).toList(),
           emby: widget.emby,
           columns: cols,
           width: constraints.maxWidth,

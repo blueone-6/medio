@@ -18,7 +18,7 @@ String homeRecommendationFilterLabel(HomeRecommendationFilter filter) {
   }
 }
 
-const _targetCount = 12;
+const _targetCount = 30;
 const _maxSeeds = 5;
 const _similarPerSeed = 8;
 
