@@ -177,7 +177,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
     }
     if (libraries.isLoading && libs == null) {
-      return const LoadingIndicator.homeFeed();
+      // 首页和设置页不依赖 libraries，直接渲染以避免骨架屏跳变。
+      final resume = resumeAsync.value ?? const <EmbyMediaItem>[];
+      switch (_desktopNav) {
+        case HomePcNavItem.home:
+          return _buildDesktopHomeMain(context, emby, resume, resumeAsync);
+        case HomePcNavItem.settings:
+          return _buildDesktopSettingsPane();
+        case HomePcNavItem.movies:
+        case HomePcNavItem.series:
+        case HomePcNavItem.library:
+          return const LoadingIndicator.homeFeed();
+      }
     }
 
     final resume = resumeAsync.value ?? const <EmbyMediaItem>[];
