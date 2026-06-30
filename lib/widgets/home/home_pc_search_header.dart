@@ -77,59 +77,52 @@ class _HomePcSearchHeaderState extends State<HomePcSearchHeader> {
           bottom: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.55)),
         ),
       ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(
-          HomeLayout.horizontalMargin,
-          AppSpacing.sm,
-          HomeLayout.horizontalMargin,
-          AppSpacing.sm,
-        ),
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: ConstrainedBox(
-            constraints:
-                const BoxConstraints(maxWidth: HomeLayout.pcContentMaxWidth),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: ConstrainedBox(
-                constraints:
-                    const BoxConstraints(maxWidth: HomeLayout.pcSearchMaxWidth),
-                child: MouseRegion(
-                  onEnter: (_) => setState(() => _hovered = true),
-                  onExit: (_) => setState(() => _hovered = false),
-                  child: Material(
-                    color: cs.surfaceContainerHigh,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: AppRadius.pillR,
-                      side: BorderSide(
-                        color: _focused
-                            ? cs.primary.withValues(alpha: 0.55)
-                            : cs.outlineVariant.withValues(alpha: 0.45),
-                        width: _focused ? 2 : 1,
-                      ),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: _isInlineSearch
-                        ? _InlineSearchField(
-                            controller: _controller,
-                            hintText: widget.hintText,
-                            focused: _focused,
-                            hovered: _hovered,
-                            onFocusChange: (f) => setState(() => _focused = f),
-                            onChanged: widget.onChanged,
-                            onSubmitted: widget.onSubmitted,
-                            onClear: _clear,
-                            focusNode: widget.focusNode,
-                          )
-                        : _SearchEntryButton(
-                            hintText: widget.hintText,
-                            focused: _focused,
-                            hovered: _hovered,
-                            onFocusChange: (f) => setState(() => _focused = f),
-                            onTap: widget.onTap,
-                          ),
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints:
+              const BoxConstraints(maxWidth: HomeLayout.pcContentMaxWidth),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              HomeLayout.horizontalMargin,
+              AppSpacing.sm,
+              HomeLayout.horizontalMargin,
+              AppSpacing.sm,
+            ),
+            child: MouseRegion(
+              onEnter: (_) => setState(() => _hovered = true),
+              onExit: (_) => setState(() => _hovered = false),
+              child: Material(
+                color: cs.surfaceContainerHigh,
+                shape: RoundedRectangleBorder(
+                  borderRadius: AppRadius.pillR,
+                  side: BorderSide(
+                    color: _focused
+                        ? cs.primary.withValues(alpha: 0.55)
+                        : cs.outlineVariant.withValues(alpha: 0.45),
+                    width: _focused ? 2 : 1,
                   ),
                 ),
+                clipBehavior: Clip.antiAlias,
+                child: _isInlineSearch
+                    ? _InlineSearchField(
+                        controller: _controller,
+                        hintText: widget.hintText,
+                        focused: _focused,
+                        hovered: _hovered,
+                        onFocusChange: (f) => setState(() => _focused = f),
+                        onChanged: widget.onChanged,
+                        onSubmitted: widget.onSubmitted,
+                        onClear: _clear,
+                        focusNode: widget.focusNode,
+                      )
+                    : _SearchEntryButton(
+                        hintText: widget.hintText,
+                        focused: _focused,
+                        hovered: _hovered,
+                        onFocusChange: (f) => setState(() => _focused = f),
+                        onTap: widget.onTap,
+                      ),
               ),
             ),
           ),

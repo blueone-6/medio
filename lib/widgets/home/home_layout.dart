@@ -59,8 +59,6 @@ abstract final class HomeLayout {
   static const pcSidebarIconSize = 24.0;
   static const pcSidebarIconGap = 16.0;
   static const pcContentMaxWidth = 1200.0;
-  /// PC 顶栏搜索触发器宽度（约为内容区的 80%，对齐续播/推荐左缘节奏）。
-  static const pcSearchMaxWidth = 960.0;
   static const pcRecommendColumns = 5;
   static const pcHeroAspectRatio = 21 / 9;
   static const pcSectionGap = 24.0;
