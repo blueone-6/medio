@@ -1044,13 +1044,13 @@ class EmbyService {
       }
       AppLog.instance.w(
         'EmbyService',
-        'fetchSubtitleText empty status=${res.statusCode} url=$url',
+        'fetchSubtitleText empty status=${res.statusCode} url=${AppLog.redactUrl(url)}',
       );
       return null;
     } on DioException catch (e, st) {
       AppLog.instance.e(
         'EmbyService',
-        'fetchSubtitleText failed url=$url',
+        'fetchSubtitleText failed url=${AppLog.redactUrl(url)}',
         error: e,
         stackTrace: st,
       );
