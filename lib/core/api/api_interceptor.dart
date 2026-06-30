@@ -15,7 +15,6 @@ import 'api_exception.dart';
 class LoggingInterceptor extends Interceptor {
   static const _spanKey = '__perf_span';
   static const _redacted = {'Authorization', 'X-Emby-Token', 'X-Emby-Authorization'};
-  static const _bodyMaxLen = 800;
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
@@ -34,9 +33,9 @@ class LoggingInterceptor extends Interceptor {
     }
     AppLog.instance.d(
       'HTTP',
-      '→ ${options.method} ${options.uri}',
+      '→ ${options.method} ${AppLog.redactUrl(options.uri.toString())}',
       'headers=$headers'
-      '${(options.method != 'GET' && options.method != 'DELETE' && options.data != null) ? ' body=${dataTruncated(options.data)}' : ''}',
+      '${(options.method != 'GET' && options.method != 'DELETE' && options.data != null) ? ' body=${AppLog.redactBody(options.data)}' : ''}',
     );
     handler.next(options);
   }
@@ -49,7 +48,7 @@ class LoggingInterceptor extends Interceptor {
     }
     AppLog.instance.i(
       'HTTP',
-      '← ${response.requestOptions.method} ${response.requestOptions.uri} '
+      '← ${response.requestOptions.method} ${AppLog.redactUrl(response.requestOptions.uri.toString())} '
       '→ ${response.statusCode}',
     );
     handler.next(response);
@@ -64,18 +63,11 @@ class LoggingInterceptor extends Interceptor {
     final req = err.requestOptions;
     AppLog.instance.w(
       'HTTP',
-      '✗ ${req.method} ${req.uri} '
+      '✗ ${req.method} ${AppLog.redactUrl(req.uri.toString())} '
       '→ ${err.response?.statusCode ?? 'N/A'} ${err.message ?? ''}',
       err.response?.data,
     );
     handler.next(err);
-  }
-
-  /// Truncate large request bodies to avoid flooding the log file.
-  static String dataTruncated(dynamic data, {int maxLen = _bodyMaxLen}) {
-    final s = data.toString();
-    if (s.length <= maxLen) return s;
-    return '${s.substring(0, maxLen)}… (${s.length} chars)';
   }
 }
 
@@ -102,7 +94,7 @@ class RetryInterceptor extends Interceptor {
     final delayMs = 400 * (1 << attempt);
     AppLog.instance.w(
       'HTTP',
-      'retry ${req.method} ${req.uri} attempt=${attempt + 1}/$maxRetries '
+      'retry ${req.method} ${AppLog.redactUrl(req.uri.toString())} attempt=${attempt + 1}/$maxRetries '
       'after ${delayMs}ms (${err.message ?? err.type})',
     );
     await Future<void>.delayed(Duration(milliseconds: delayMs));

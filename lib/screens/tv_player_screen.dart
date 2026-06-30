@@ -242,7 +242,7 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
       final videoRange = item.videoRange;
       AppLog.instance.i(
         'TvPlayer',
-        'open itemId=${widget.itemId} url=$openUrl '
+        'open itemId=${widget.itemId} url=${AppLog.redactUrl(openUrl)} '
             'resume=${resumeAt?.inSeconds}s subtitle=${subtitle?.label} '
             'exo=${subtitle != null} hdr=$isHdr range=$videoRange',
       );

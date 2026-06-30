@@ -82,6 +82,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Timer? _chromeIdleTimer;
   StreamSubscription<dynamic>? _playerErrorSub;
   StreamSubscription<dynamic>? _completedSub;
+  StreamSubscription<Track>? _diagTrackSub;
+  StreamSubscription<Tracks>? _diagTracksSub;
   VoidCallback? _cancelAndroidResumeGuard;
 
   /// Prevents _bootstrap from running more than once per State.
@@ -197,13 +199,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final playerSvc = ref.read(playerServiceProvider);
     playerSvc.disposePlayer();
     _player = playerSvc.player;
-    _player.stream.track.listen((t) {
+    _diagTrackSub = _player.stream.track.listen((t) {
       AppLog.instance.d(
         'SubtitleDiag',
         'stream.track.subtitle id=${t.subtitle.id} title=${t.subtitle.title}',
       );
     });
-    _player.stream.tracks.listen((tracks) {
+    _diagTracksSub = _player.stream.tracks.listen((tracks) {
       final n =
           tracks.subtitle.where((s) => s.id != 'auto' && s.id != 'no').length;
       AppLog.instance.d('SubtitleDiag', 'stream.tracks subtitle_count=$n');
@@ -500,9 +502,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     await _player.setMpvProperty('start', startSecsStr);
 
     if (pb.strmViaEmbyStream) {
-      if (attempt >= 2) {
-        false;
-      }
       final cdnFuture = PerfTracer.measure(
         'emby.resolveExternalCdnUrl',
         () => emby.resolveExternalCdnUrl(pb.streamUrl),
@@ -1275,7 +1274,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     AppLog.instance.i(
       'Player',
-      'strm playback: mode=$mode openUrl=$openUrl '
+      'strm playback: mode=$mode openUrl=${AppLog.redactUrl(openUrl)} '
       'headers=${headers.keys.toList()}',
     );
     await _openStream(
@@ -1947,6 +1946,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _cancelAndroidResumeGuard?.call();
     _cancelAndroidResumeGuard = null;
     _playerErrorSub?.cancel();
+    _diagTrackSub?.cancel();
+    _diagTrackSub = null;
+    _diagTracksSub?.cancel();
+    _diagTracksSub = null;
     _progressTimer?.cancel();
     _chromeIdleTimer?.cancel();
     _completedSub?.cancel();

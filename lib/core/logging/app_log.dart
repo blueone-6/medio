@@ -44,6 +44,66 @@ class AppLog {
   /// Read-only snapshot for diagnostics screen ("session=… ver=… platform=…").
   String get sessionBanner => LogSession.instance.banner();
 
+  /// Query parameter keys whose values are redacted from all logs to prevent
+  /// access tokens from being written to the rotated log files.
+  static const sensitiveQueryParams = {
+    'api_key',
+    'X-Emby-Token',
+    'access_token',
+  };
+
+  /// Request body fields whose values are redacted from all logs (e.g. the
+  /// `Pw` field of the Emby login payload).
+  static const sensitiveBodyFields = {
+    'Pw',
+    'Password',
+    'password',
+    'CurrentPw',
+    'NewPw',
+  };
+
+  /// Returns [url] with any sensitive query parameter values replaced by
+  /// `***`. Falls back to the original string if parsing fails.
+  static String redactUrl(String url) {
+    if (!url.contains('=')) return url;
+    try {
+      final uri = Uri.parse(url);
+      if (uri.queryParameters.isEmpty) return url;
+      var changed = false;
+      final redacted = <String, List<String>>{};
+      for (final key in uri.queryParametersAll.keys) {
+        final values = uri.queryParametersAll[key]!;
+        if (sensitiveQueryParams.contains(key)) {
+          redacted[key] = const ['***'];
+          changed = true;
+        } else {
+          redacted[key] = values;
+        }
+      }
+      if (!changed) return url;
+      return uri.replace(queryParameters: redacted).toString();
+    } catch (_) {
+      return url;
+    }
+  }
+
+  /// Returns a truncated string representation of [body] with sensitive
+  /// fields (e.g. `Pw`) masked as `***`.
+  static String redactBody(dynamic body, {int maxLen = 800}) {
+    String s;
+    if (body is Map) {
+      final copy = Map<String, dynamic>.from(body);
+      for (final key in sensitiveBodyFields) {
+        if (copy.containsKey(key)) copy[key] = '***';
+      }
+      s = copy.toString();
+    } else {
+      s = body.toString();
+    }
+    if (s.length <= maxLen) return s;
+    return '${s.substring(0, maxLen)}… (${s.length} chars)';
+  }
+
   /// Lists on-disk log files under [logDirectoryPath], oldest first.
   Future<List<File>> listLogFiles() async {
     if (kIsWeb) return [];

@@ -69,23 +69,26 @@ class TvExoPlayerControls extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 4,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                activeTrackColor: PlayerPaletteDefaults.accent,
-                inactiveTrackColor: const Color(0x44FFFFFF),
-                thumbColor: PlayerPaletteDefaults.accent,
-              ),
-              child: Slider(
-                value: fraction,
-                onChanged: durMs > 0
-                    ? (v) {
-                        onUserInteraction?.call();
-                        onSeek(Duration(milliseconds: (v * durMs).round()));
-                      }
-                    : null,
+            TvFocusRing(
+              scaleFocused: false,
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 4,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                  activeTrackColor: PlayerPaletteDefaults.accent,
+                  inactiveTrackColor: const Color(0x44FFFFFF),
+                  thumbColor: PlayerPaletteDefaults.accent,
+                ),
+                child: Slider(
+                  value: fraction,
+                  onChanged: durMs > 0
+                      ? (v) {
+                          onUserInteraction?.call();
+                          onSeek(Duration(milliseconds: (v * durMs).round()));
+                        }
+                      : null,
+                ),
               ),
             ),
             Row(

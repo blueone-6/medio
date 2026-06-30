@@ -35,7 +35,10 @@ Future<String> resolvePlaybackRedirectChain(
   int maxHops = playbackRedirectMaxHops,
 }) async {
   final dio = _dio;
-  dio.options.headers = requestHeaders ?? {};
+  // NOTE: headers are passed per-request via Options below — the Dio instance
+  // is a process-wide singleton shared across concurrent resolutions, so
+  // mutating `dio.options.headers` here would let one call overwrite another's
+  // credentials (X-Emby-Token / CDN headers).
 
   var current = url;
   for (var hop = 0; hop < maxHops; hop++) {
@@ -44,7 +47,8 @@ Future<String> resolvePlaybackRedirectChain(
     }
     if (isExternalCdnPlaybackUrl(current)) return current;
 
-    final next = await _fetchRedirectLocation(dio, current);
+    final next = await _fetchRedirectLocation(dio, current,
+        requestHeaders: requestHeaders);
     if (next == null || next == current) return current;
     current = next;
     if (isExternalCdnPlaybackUrl(current)) return current;
@@ -53,7 +57,11 @@ Future<String> resolvePlaybackRedirectChain(
   return remapUrl != null ? remapUrl(current) : current;
 }
 
-Future<String?> _fetchRedirectLocation(Dio dio, String url) async {
+Future<String?> _fetchRedirectLocation(
+  Dio dio,
+  String url, {
+  Map<String, String>? requestHeaders,
+}) async {
   String? locationFrom(Response<dynamic> response) =>
       response.headers.value('location') ?? response.headers.value('Location');
 
@@ -80,6 +88,7 @@ Future<String?> _fetchRedirectLocation(Dio dio, String url) async {
         followRedirects: false,
         validateStatus: (_) => true,
         responseType: ResponseType.stream,
+        headers: requestHeaders,
       ),
     );
     final loc = pickLocation(res);

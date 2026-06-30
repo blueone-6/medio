@@ -556,7 +556,7 @@ class EmbyService {
     );
     AppLog.instance.i(
       'ExtCdn',
-      'resolve $resolved',
+      'resolve ${AppLog.redactUrl(resolved)}',
     );
     return resolved;
   }

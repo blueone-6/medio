@@ -1198,12 +1198,21 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
   // ── Subtitle offset ──
 
-  void _adjustSubDelay(int deltaMs) async {
+  Future<void> _adjustSubDelay(int deltaMs) async {
     _notify();
     final settings = ref.read(settingsServiceProvider);
     final n = settings.subtitleOffsetMs + deltaMs;
-    await settings.setSubtitleOffsetMs(n);
-    await _player.setSubtitleDelay(Duration(milliseconds: n));
+    try {
+      await settings.setSubtitleOffsetMs(n);
+      await _player.setSubtitleDelay(Duration(milliseconds: n));
+    } catch (e, st) {
+      AppLog.instance.e(
+        'PlayerControls',
+        'adjustSubDelay failed deltaMs=$deltaMs',
+        error: e,
+        stackTrace: st,
+      );
+    }
   }
 
   Widget _buildSubOffsetButtons() {
@@ -1760,7 +1769,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
         ),
       ),
       _spacer(1),
-      _miniCompactBtn(Icons.add_rounded, '延后 0.1s', () => _adjustSubDelay(100)),
+      _miniCompactBtn(Icons.add_rounded, '延后 0.1s', () => unawaited(_adjustSubDelay(100))),
     ]);
   }
 
