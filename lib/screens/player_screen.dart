@@ -759,7 +759,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       );
       AppLog.instance.i(
         'Player',
-        'open itemId=${widget.itemId} strm=$strm url=${pb.streamUrl} '
+        'open itemId=${widget.itemId} strm=$strm url=${AppLog.redactUrl(pb.streamUrl)} '
             'subs=${pb.subtitles.length} resumeTicks=$startTimeTicks '
             'resumeAt=${resumeAt != null ? "${resumeAt.inSeconds}s" : "none"}',
       );
@@ -1293,7 +1293,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }) async {
     AppLog.instance.i(
       'Player',
-      '_openStream: url=$url externalCdn=$externalCdn headers=${headers?.keys.toList()}',
+      '_openStream: url=${AppLog.redactUrl(url)} externalCdn=$externalCdn headers=${headers?.keys.toList()}',
     );
     if (externalCdn) {
       await _player.applyExternalCdnPlaybackOptions(headers: headers);
