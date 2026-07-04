@@ -6,9 +6,9 @@ import '../models/emby/emby_media_item.dart';
 import '../providers/emby_provider.dart';
 import '../services/emby_service.dart';
 import '../utils/media_navigation.dart';
-import 'loading_indicator.dart';
 import 'media_card.dart';
 import 'media_grid.dart';
+import 'skeleton.dart';
 
 class MediaSimilarItemsSliver extends ConsumerWidget {
   const MediaSimilarItemsSliver({super.key, required this.itemId, required this.emby});
@@ -38,13 +38,42 @@ class MediaSimilarItemsSliver extends ConsumerWidget {
                     if (items.isEmpty) return const SizedBox.shrink();
                     return _SimilarGrid(items: items, emby: emby);
                   },
-                  loading: () => const SizedBox(
-                    height: 160,
-                    child: LoadingIndicator.posterRow(
-                      posterRowHeight: 160,
-                      posterRowItemWidth: 96,
-                      posterRowItemCount: 5,
-                    ),
+                  loading: () => LayoutBuilder(
+                    builder: (ctx, constraints) {
+                      const minTileW = 108.0;
+                      const spacing = 16.0;
+                      const ar = 2 / 3;
+                      final crossCount = mediaGridCrossAxisCountForWidth(
+                        constraints.maxWidth,
+                        minTileWidth: minTileW,
+                        spacing: spacing,
+                      );
+                      final tileW = (constraints.maxWidth -
+                              spacing * (crossCount - 1)) /
+                          crossCount;
+                      final tileH = mediaCardGridCellHeight(
+                        ctx,
+                        tileW,
+                        discoverStyle: true,
+                        posterAspectRatio: ar,
+                      );
+                      return GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        gridDelegate:
+                            SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: crossCount,
+                          mainAxisSpacing: spacing,
+                          crossAxisSpacing: spacing,
+                          childAspectRatio: tileW / tileH,
+                        ),
+                        itemCount: 6,
+                        itemBuilder: (_, __) => const PosterSkeleton(
+                          aspectRatio: 2 / 3,
+                        ),
+                      );
+                    },
                   ),
                   error: (_, __) => const SizedBox.shrink(),
                 );

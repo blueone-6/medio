@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/theme/app_radius.dart';
 import '../providers/emby_provider.dart';
 import '../providers/settings_provider.dart';
 import '../widgets/empty_state_view.dart';
 import '../widgets/error_view.dart';
-import '../widgets/loading_indicator.dart';
+import '../widgets/skeleton.dart';
 import '../utils/media_navigation.dart';
 import '../widgets/media_list_tile.dart';
 
@@ -58,7 +59,24 @@ class SeasonEpisodeScreen extends ConsumerWidget {
             },
           );
         },
-        loading: () => const LoadingIndicator.list(),
+        loading: () => ListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          itemCount: 8,
+          itemBuilder: (_, __) => const ListTile(
+            dense: true,
+            leading: Skeleton.circle(size: 36),
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Skeleton(height: 14, borderRadius: AppRadius.xsR),
+                SizedBox(height: 4),
+                Skeleton(height: 12, borderRadius: AppRadius.xsR),
+              ],
+            ),
+          ),
+        ),
         error: (err, _) => ErrorView(
           error: err,
           onRetry: () => ref.invalidate(embyEpisodesProvider(seasonId)),

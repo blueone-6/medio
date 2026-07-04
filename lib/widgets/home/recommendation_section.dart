@@ -58,7 +58,7 @@ class _RecommendationSectionState extends ConsumerState<RecommendationSection> {
 
   Widget _buildRecommendLoading() {
     if (widget.horizontal) {
-      return const LoadingIndicator.posterRow(posterRowHeight: 180);
+      return const LoadingIndicator.posterRow(posterRowHeight: 220);
     }
     return LayoutBuilder(
       builder: (context, constraints) {

@@ -19,12 +19,12 @@ import '../providers/settings_provider.dart';
 import '../services/emby_service.dart';
 import '../widgets/empty_state_view.dart';
 import '../widgets/error_view.dart';
-import '../widgets/loading_indicator.dart';
 import '../utils/media_navigation.dart';
 import '../widgets/media_badges.dart';
 import '../widgets/media_cast_section.dart';
 import '../widgets/media_similar_section.dart';
 import '../widgets/poster_skeleton.dart';
+import '../widgets/skeleton.dart';
 import '../widgets/tv/tv_focus_ring.dart';
 import '../widgets/tv/tv_home_layout.dart';
 import '../widgets/tv/tv_keyboard_handler.dart';
@@ -83,7 +83,7 @@ class _MediaDetailScreenBodyState extends ConsumerState<_MediaDetailScreenBody> 
         }
         return _buildNonSeriesScaffold(context, ref, emby, item);
       },
-      loading: () => const Scaffold(body: LoadingIndicator()),
+      loading: () => const _MediaDetailSkeleton(),
       error: (e, _) => Scaffold(
         appBar: AppBar(),
         body: ErrorView(
@@ -152,7 +152,7 @@ class _SeriesDetailPageState extends ConsumerState<_SeriesDetailPage> {
     final seasonsAsync = ref.watch(embySeasonsProvider(widget.series.id));
 
     return seasonsAsync.when(
-      loading: () => const Scaffold(body: LoadingIndicator()),
+      loading: () => const _MediaDetailSkeleton(),
       error: (e, _) => Scaffold(
         appBar: AppBar(),
         body: ErrorView(
@@ -176,6 +176,144 @@ class _SeriesDetailPageState extends ConsumerState<_SeriesDetailPage> {
         return _SeriesDetailLoaded(series: widget.series, sortedSeasons: sorted);
       },
     );
+  }
+}
+
+/// 详情页加载骨架 — 模拟 Hero 区（剧照背景 + 海报 + 信息卡）。
+class _MediaDetailSkeleton extends StatelessWidget {
+  const _MediaDetailSkeleton();
+
+  Widget _infoCardSkeleton(double titleH, int overviewLines) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Skeleton(height: titleH, borderRadius: AppRadius.xsR),
+        const SizedBox(height: 8),
+        const Row(
+          children: [
+            Skeleton(width: 56, height: 22, borderRadius: AppRadius.pillR),
+            SizedBox(width: 6),
+            Skeleton(width: 48, height: 22, borderRadius: AppRadius.pillR),
+          ],
+        ),
+        const SizedBox(height: 10),
+        const Skeleton(width: 90, height: 36, borderRadius: AppRadius.pillR),
+        const Spacer(),
+        for (var i = 0; i < overviewLines; i++) ...[
+          if (i > 0) const SizedBox(height: 6),
+          if (i == overviewLines - 1)
+            const FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: 0.7,
+              child: Skeleton(height: 14, borderRadius: AppRadius.xsR),
+            )
+          else
+            const Skeleton(height: 14, borderRadius: AppRadius.xsR),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildMobile(double backdropH) {
+    return Scaffold(
+      body: SingleChildScrollView(
+        physics: const NeverScrollableScrollPhysics(),
+        child: Column(
+          children: [
+            SizedBox(
+              height: backdropH,
+              width: double.infinity,
+              child: const Skeleton(borderRadius: BorderRadius.zero),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(
+                children: [
+                  const SizedBox(
+                    width: 120,
+                    height: 180,
+                    child: Skeleton(borderRadius: AppRadius.mdR),
+                  ),
+                  const SizedBox(height: 14),
+                  ClipRRect(
+                    borderRadius: AppRadius.mdR,
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      child: _infoCardSkeleton(22, 3),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDesktopTv(double totalH, double innerH) {
+    final posterW = innerH * 2 / 3;
+    return Scaffold(
+      body: SingleChildScrollView(
+        physics: const NeverScrollableScrollPhysics(),
+        child: SizedBox(
+          height: totalH,
+          width: double.infinity,
+          child: Stack(
+            children: [
+              const Positioned.fill(
+                child: Skeleton(borderRadius: BorderRadius.zero),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 18, vertical: 14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: posterW,
+                        height: innerH,
+                        child: const Skeleton(borderRadius: AppRadius.mdR),
+                      ),
+                      const SizedBox(width: 18),
+                      Expanded(
+                        child: SizedBox(
+                          height: innerH,
+                          child: ClipRRect(
+                            borderRadius: AppRadius.mdR,
+                            child: Container(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                              child: _infoCardSkeleton(24, 4),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screen = MediaQuery.sizeOf(context);
+    final bandH = _detailBackdropBandHeight(screen);
+    final topBarH = _detailTopBarHeight(context);
+
+    if (isAndroidMobileUi && !context.isTvUi) {
+      return _buildMobile(bandH + topBarH);
+    }
+    return _buildDesktopTv(bandH + topBarH, (bandH - 28).clamp(180.0, 300.0));
   }
 }
 
@@ -1385,12 +1523,34 @@ class _SeriesEpisodePanelState extends State<_SeriesEpisodePanel> {
               ],
             );
           },
-          loading: () => const SizedBox(
-            height: 100,
-            child: LoadingIndicator.posterRow(
-              posterRowHeight: 100,
-              posterRowItemWidth: 72,
-              posterRowItemCount: 5,
+          loading: () => SizedBox(
+            // 与 _EpisodeCardRow 的 cardH 对齐：posterH(78.75)+gap(6)+title(38)+safety(4)
+            height: 140 / (16 / 9) + 6 + 38 + 4,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              itemCount: 6,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (_, __) => const SizedBox(
+                width: 140,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    AspectRatio(
+                      aspectRatio: 16 / 9,
+                      child: Skeleton(borderRadius: AppRadius.mdR),
+                    ),
+                    SizedBox(height: 6),
+                    Skeleton(height: 12, borderRadius: AppRadius.xsR),
+                    SizedBox(height: 4),
+                    FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: 0.7,
+                      child: Skeleton(height: 12, borderRadius: AppRadius.xsR),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
           error: (e, _) => ErrorView(error: e, compact: true),

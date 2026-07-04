@@ -694,38 +694,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     if (isAndroidMobileUi && !context.isTvUi) {
-      return libraries.when(
-        data: (libs) => resumeAsync.when(
-          data: (resume) => HomeAndroidShell(
-            hideHomeAppBar: true,
-            homeTab: _buildMobileHomeTab(context, emby, resume),
-            libraryTab: _buildAndroidLibraryTab(context, libs),
-          ),
-          loading: () => const HomeAndroidShell(
-            hideHomeAppBar: true,
-            homeTab: LoadingIndicator.homeFeed(),
-            libraryTab: LoadingIndicator.posterGrid(homeRecommendStyle: true),
-          ),
-          error: (e, _) => HomeAndroidShell(
-            hideHomeAppBar: true,
-            homeTab: ErrorView.forHomeSection(
-              error: e,
-              section: HomeLoadSection.resume,
-              onRetry: () => ref.invalidate(embyResumeProvider),
-              onOpenSettings: () => context.push('/settings/servers'),
-            ),
-            libraryTab: _buildAndroidLibraryTab(context, libs),
-          ),
-        ),
-        loading: () => const Scaffold(body: LoadingIndicator()),
-        error: (e, _) => Scaffold(
+      // 与 PC 端一致：首页不依赖 libraries，直接渲染以避免骨架屏跳变。
+      final libs = libraries.value;
+      final resume = resumeAsync.value;
+
+      // libraries 加载失败且无缓存 → 全屏错误
+      if (libraries.hasError && libs == null) {
+        return Scaffold(
           body: ErrorView.forHomeSection(
-            error: e,
+            error: libraries.error!,
             section: HomeLoadSection.libraries,
             onRetry: () => ref.invalidate(embyLibrariesProvider),
             onOpenSettings: () => context.push('/settings/servers'),
           ),
-        ),
+        );
+      }
+
+      return HomeAndroidShell(
+        hideHomeAppBar: true,
+        homeTab: resume != null
+            ? _buildMobileHomeTab(context, emby, resume)
+            : resumeAsync.hasError
+                ? ErrorView.forHomeSection(
+                    error: resumeAsync.error!,
+                    section: HomeLoadSection.resume,
+                    onRetry: () => ref.invalidate(embyResumeProvider),
+                    onOpenSettings: () => context.push('/settings/servers'),
+                  )
+                : const LoadingIndicator.homeFeed(),
+        libraryTab: libs != null
+            ? _buildAndroidLibraryTab(context, libs)
+            : const LoadingIndicator.posterGrid(homeRecommendStyle: true),
       );
     }
 
