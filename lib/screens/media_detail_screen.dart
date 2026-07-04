@@ -1576,6 +1576,12 @@ class _EpisodeCardRowState extends State<_EpisodeCardRow> {
         _scroll.hasClients && _scroll.offset < _scroll.position.maxScrollExtent - 1;
   }
 
+  void _scheduleUpdateScrollNotifiers() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _updateScrollNotifiers();
+    });
+  }
+
   void _nudge(int direction) {
     if (!_scroll.hasClients) return;
     final max = _scroll.position.maxScrollExtent;
@@ -1592,11 +1598,15 @@ class _EpisodeCardRowState extends State<_EpisodeCardRow> {
   @override
   void didUpdateWidget(_EpisodeCardRow oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.nextUpEpisodeId != widget.nextUpEpisodeId ||
-        oldWidget.scrollToEpisodeNumber != widget.scrollToEpisodeNumber) {
+    final targetChanged = oldWidget.nextUpEpisodeId != widget.nextUpEpisodeId ||
+        oldWidget.scrollToEpisodeNumber != widget.scrollToEpisodeNumber;
+    if (targetChanged) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToTarget();
       });
+    }
+    if (targetChanged || !identical(oldWidget.episodes, widget.episodes)) {
+      _scheduleUpdateScrollNotifiers();
     }
   }
 
@@ -1660,31 +1670,37 @@ class _EpisodeCardRowState extends State<_EpisodeCardRow> {
 
     final listView = SizedBox(
       height: cardH,
-      child: ListView.separated(
-        controller: _scroll,
-        clipBehavior: Clip.hardEdge,
-        scrollDirection: Axis.horizontal,
-        padding: EdgeInsets.fromLTRB(2 + focusPad, focusPad, 2 + focusPad, 0),
-        itemCount: list.length,
-        separatorBuilder: (_, __) => const SizedBox(width: _separatorW),
-        itemBuilder: (context, index) {
-          final ep = list[index];
-          final isNextUp = ep.id == nextUpId;
-          final url = emby.posterUrlForItem(ep, maxHeight: AppConfig.posterMaxHeight);
-          final progress = ep.userDataPlayedPercentage;
-          return SizedBox(
-            width: _cardWidth,
-            child: _EpisodeCard(
-              imageUrl: url,
-              title: widget.titleFor(ep, index),
-              isNextUp: isNextUp,
-              progress: progress,
-              httpHeaders: emby.imageAuthHeaders,
-              onTap: () => widget.onEpisodeFocus(ep.id),
-              onPlay: () => widget.onPlayEpisode(ep),
-            ),
-          );
+      child: NotificationListener<ScrollMetricsNotification>(
+        onNotification: (notification) {
+          _updateScrollNotifiers();
+          return false;
         },
+        child: ListView.separated(
+          controller: _scroll,
+          clipBehavior: Clip.hardEdge,
+          scrollDirection: Axis.horizontal,
+          padding: EdgeInsets.fromLTRB(2 + focusPad, focusPad, 2 + focusPad, 0),
+          itemCount: list.length,
+          separatorBuilder: (_, __) => const SizedBox(width: _separatorW),
+          itemBuilder: (context, index) {
+            final ep = list[index];
+            final isNextUp = ep.id == nextUpId;
+            final url = emby.posterUrlForItem(ep, maxHeight: AppConfig.posterMaxHeight);
+            final progress = ep.userDataPlayedPercentage;
+            return SizedBox(
+              width: _cardWidth,
+              child: _EpisodeCard(
+                imageUrl: url,
+                title: widget.titleFor(ep, index),
+                isNextUp: isNextUp,
+                progress: progress,
+                httpHeaders: emby.imageAuthHeaders,
+                onTap: () => widget.onEpisodeFocus(ep.id),
+                onPlay: () => widget.onPlayEpisode(ep),
+              ),
+            );
+          },
+        ),
       ),
     );
 
