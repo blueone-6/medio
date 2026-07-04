@@ -34,14 +34,18 @@ class ContinueWatchingSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isLoading) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(horizontal: HomeLayout.horizontalMargin),
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: HomeLayout.horizontalMargin),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            HomeSectionHeader(title: '继续观看', trailingLabel: '全部'),
-            SizedBox(height: HomeLayout.sectionHeaderGap),
-            GlassSurface(
+            HomeSectionHeader(
+              title: '继续观看',
+              trailingLabel: onViewAll == null ? null : '全部',
+              onTrailingTap: onViewAll,
+            ),
+            const SizedBox(height: HomeLayout.sectionHeaderGap),
+            const GlassSurface(
               padding: EdgeInsets.all(HomeLayout.cardPadding),
               useBlur: false,
               child: Row(
@@ -51,28 +55,31 @@ class ContinueWatchingSection extends StatelessWidget {
                     flex: HomeLayout.featuredThumbFlex,
                     child: AspectRatio(
                       aspectRatio: 16 / 9,
-                      child: _ConstSkeleton(borderRadius: AppRadius.smR),
+                      child: Skeleton(borderRadius: AppRadius.smR),
                     ),
                   ),
                   SizedBox(width: HomeLayout.sectionHeaderGap),
                   Expanded(
                     flex: HomeLayout.featuredBodyFlex,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _ConstSkeleton(width: 80, height: 14, borderRadius: AppRadius.xsR),
-                        SizedBox(height: AppSpacing.sm),
-                        _ConstSkeleton(height: 20, borderRadius: AppRadius.xsR),
-                        SizedBox(height: AppSpacing.sm),
-                        _ConstSkeleton(width: 120, height: 12, borderRadius: AppRadius.xsR),
-                      ],
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(0, AppSpacing.xs, 52, AppSpacing.xs),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Skeleton(width: 80, height: 14, borderRadius: AppRadius.xsR),
+                          SizedBox(height: AppSpacing.xs),
+                          Skeleton(height: 20, borderRadius: AppRadius.xsR),
+                          SizedBox(height: AppSpacing.xs),
+                          Skeleton(width: 120, height: 12, borderRadius: AppRadius.xsR),
+                        ],
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
-            SizedBox(height: HomeLayout.sectionInnerGap),
-            Row(
+            const SizedBox(height: HomeLayout.sectionInnerGap),
+            const Row(
               children: [
                 Expanded(
                   child: _SecondaryContinueSkeleton(),
@@ -268,19 +275,6 @@ class _FeaturedContinueCard extends StatelessWidget {
   }
 }
 
-/// const wrapper around [Skeleton] so loading placeholders can live inside
-/// const widget trees without analyzer prefer_const warnings.
-class _ConstSkeleton extends StatelessWidget {
-  const _ConstSkeleton({this.width, this.height, this.borderRadius = AppRadius.smR});
-
-  final double? width;
-  final double? height;
-  final BorderRadius borderRadius;
-
-  @override
-  Widget build(BuildContext context) => Skeleton(width: width, height: height, borderRadius: borderRadius);
-}
-
 class _SecondaryContinueSkeleton extends StatelessWidget {
   const _SecondaryContinueSkeleton();
 
@@ -294,16 +288,16 @@ class _SecondaryContinueSkeleton extends StatelessWidget {
           SizedBox(
             width: 64,
             height: 40,
-            child: _ConstSkeleton(borderRadius: AppRadius.smR),
+            child: Skeleton(borderRadius: AppRadius.smR),
           ),
           SizedBox(width: AppSpacing.sm),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _ConstSkeleton(height: 12, borderRadius: AppRadius.xsR),
+                Skeleton(height: 12, borderRadius: AppRadius.xsR),
                 SizedBox(height: 4),
-                _ConstSkeleton(width: 60, height: 10, borderRadius: AppRadius.xsR),
+                Skeleton(width: 60, height: 10, borderRadius: AppRadius.xsR),
               ],
             ),
           ),
