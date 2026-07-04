@@ -208,6 +208,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     bool compactContinue = false,
     bool horizontalRecommend = false,
     int? recommendColumns,
+    bool resumeLoading = false,
   }) {
     return [
       const SliverToBoxAdapter(child: HomeSearchBar()),
@@ -217,6 +218,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           emby: emby,
           compact: compactContinue,
           onViewAll: () => context.push('/recent-play'),
+          isLoading: resumeLoading,
         ),
       ),
       const SliverToBoxAdapter(
@@ -233,13 +235,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildMobileHomeTab(
-      BuildContext context, EmbyService emby, List<EmbyMediaItem> resume) {
+      BuildContext context, EmbyService emby, List<EmbyMediaItem> resume,
+      {bool isLoading = false}) {
     return RefreshIndicator(
       onRefresh: _onPullRefresh,
       child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: _homeContentSlivers(
-            context: context, emby: emby, resumeItems: resume),
+            context: context,
+            emby: emby,
+            resumeItems: resume,
+            resumeLoading: isLoading),
       ),
     );
   }
@@ -712,16 +718,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
       return HomeAndroidShell(
         hideHomeAppBar: true,
-        homeTab: resume != null
-            ? _buildMobileHomeTab(context, emby, resume)
-            : resumeAsync.hasError
-                ? ErrorView.forHomeSection(
-                    error: resumeAsync.error!,
-                    section: HomeLoadSection.resume,
-                    onRetry: () => ref.invalidate(embyResumeProvider),
-                    onOpenSettings: () => context.push('/settings/servers'),
-                  )
-                : const LoadingIndicator.homeFeed(),
+        homeTab: resumeAsync.hasError && resume == null
+            ? ErrorView.forHomeSection(
+                error: resumeAsync.error!,
+                section: HomeLoadSection.resume,
+                onRetry: () => ref.invalidate(embyResumeProvider),
+                onOpenSettings: () => context.push('/settings/servers'),
+              )
+            : _buildMobileHomeTab(
+                context,
+                emby,
+                resume ?? const <EmbyMediaItem>[],
+                isLoading: resume == null && resumeAsync.isLoading,
+              ),
         libraryTab: libs != null
             ? _buildAndroidLibraryTab(context, libs)
             : const LoadingIndicator.posterGrid(homeRecommendStyle: true),
