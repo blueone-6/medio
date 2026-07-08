@@ -187,6 +187,29 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _leavingPlayer = false;
   bool _codecFallbackAttempted = false;
   bool _codecFallbackInProgress = false;
+
+  /// Wall-clock time when mpv started playback. Used by the position guard to
+  /// detect the bogus "position ≈ duration" state mpv reports when opening MKV
+  /// strm streams on a cold CDN cache: mpv reads the SeekHead at EOF to learn
+  /// the duration but cannot seek back to 0, so it reports a position near the
+  /// end while nothing has actually played.
+  DateTime? _playbackStartedAt;
+
+  /// Non-null when the current session is a **resume** - mpv legitimately
+  /// jumps here via `--start`, so a position near the end is expected and not
+  /// treated as bogus. Null means fresh playback, where position ≈ duration
+  /// shortly after start is the MKV SeekHead artifact we guard against.
+  Duration? _resumeTargetForGuard;
+
+  /// True once the position guard has force-corrected a bogus position via
+  /// seek(0). Prevents repeated correction attempts within one session.
+  bool _bogusPositionCorrected = false;
+
+  /// Watches the position stream during early playback and force-seeks to 0
+  /// when mpv reports the bogus "position ≈ duration" state on fresh strm
+  /// playback. Cancels itself once the bogus state is corrected.
+  StreamSubscription<Duration>? _positionGuardSub;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -246,10 +269,56 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     try {
       final pos = _player.state.position;
       if (pos <= Duration.zero) return null;
+      // Suppress the bogus "position ≈ duration" state mpv reports on fresh
+      // strm playback with a cold CDN cache - reporting it would mark the
+      // episode as watched at 100% even though nothing actually played.
+      if (_isFreshPlaybackPositionBogus(pos)) return null;
       return (pos.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
     } catch (_) {
       return null;
     }
+  }
+
+  /// Detects the bogus "position ≈ duration" state on **fresh** playback.
+  ///
+  /// Root cause: mpv's MKV demuxer reads the SeekHead/Duration at EOF to
+  /// determine the file structure. On a cold CDN cache the byte-range seek
+  /// back to 0 may fail, leaving mpv reporting position ≈ duration while no
+  /// real playback happens. The user exits after a few seconds, but the
+  /// reported position makes Emby think the episode was fully watched.
+  ///
+  /// Returns false for resume sessions (mpv legitimately jumps via `--start`),
+  /// short media, positions not near the end, or after the 15s early-playback
+  /// window has elapsed.
+  bool _isFreshPlaybackPositionBogus(Duration pos) {
+    if (_resumeTargetForGuard != null) return false;
+    if (_bogusPositionCorrected) return false;
+    final dur = _player.state.duration;
+    if (dur <= const Duration(seconds: 30)) return false;
+    if (pos < dur * 0.9) return false;
+    final started = _playbackStartedAt;
+    if (started == null) return false;
+    return DateTime.now().difference(started) < const Duration(seconds: 15);
+  }
+
+  /// Installs a one-shot watcher that force-seeks to 0 when mpv reports the
+  /// bogus "position ≈ duration" state on fresh strm playback, recovering
+  /// playback instead of leaving the user stuck at the end of the file.
+  void _installPositionGuard() {
+    _positionGuardSub?.cancel();
+    _positionGuardSub = _player.stream.position.listen((pos) {
+      if (!mounted) return;
+      if (_bogusPositionCorrected) return;
+      if (!_isFreshPlaybackPositionBogus(pos)) return;
+      _bogusPositionCorrected = true;
+      AppLog.instance.w(
+        'Player',
+        'bogus position detected (pos=${pos.inSeconds}s '
+            'dur=${_player.state.duration.inSeconds}s) - seeking to 0 to recover',
+      );
+      _lastSeekAt = DateTime.now();
+      unawaited(_player.seek(Duration.zero));
+    });
   }
 
   Duration _clampResumePosition(Duration at, int? runTimeTicks) {
@@ -424,6 +493,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         _completedSub = null;
         _firstFrameWatch?.cancel();
         _firstFrameWatch = null;
+        _positionGuardSub?.cancel();
+        _positionGuardSub = null;
 
         setState(() {
           _error = null;
@@ -530,6 +601,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       throw StateError('recovery cancelled');
     }
 
+    // Treat recovery as a resume session so the bogus-position guard does not
+    // fire (the CDN is already warm by this point).
+    _resumeTargetForGuard = resumeAt;
     await _applyResumeAndStart();
   }
 
@@ -561,6 +635,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _bootstrapTimeoutTimer = null;
     _firstFrameWatch?.cancel();
     _firstFrameWatch = null;
+    _positionGuardSub?.cancel();
+    _positionGuardSub = null;
     _trySettleFirstFrame = null;
     _surfaceAttachSettled = false;
     _positionFirstFrameReady = false;
@@ -757,6 +833,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             startTimeTicks > 0 ? startTimeTicks : widget.hintPositionTicks,
         runTimeTicks: pb.runTimeTicks,
       );
+      // Track whether this is a resume session so the position guard only
+      // fires for fresh playback (where position ≈ duration is bogus).
+      _resumeTargetForGuard = resumeAt;
       AppLog.instance.i(
         'Player',
         'open itemId=${widget.itemId} strm=$strm url=${AppLog.redactUrl(pb.streamUrl)} '
@@ -823,6 +902,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         expectedResumeAt: resumeAt,
       );
       await _applyResumeAndStart();
+      // Mark playback start and arm the bogus-position guard. mpv may report
+      // position ≈ duration immediately after opening a strm on a cold CDN;
+      // the guard force-seeks to 0 to recover playback.
+      _playbackStartedAt = DateTime.now();
+      _bogusPositionCorrected = false;
+      _installPositionGuard();
       _pendingSubtitlePb = pb;
       span.stage('play_called');
       logPlayerPlaybackPosition(
@@ -940,6 +1025,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     void trySettle(String reason) {
       if (_firstFrameReported) return;
       final pos = _player.state.position;
+      // Ignore bogus "position ≈ duration" on fresh strm playback - the
+      // position guard will seek to 0 and the real first frame will follow.
+      if (_isFreshPlaybackPositionBogus(pos)) return;
       if (isResumePositionSettled(pos, resumeTarget)) {
         _positionFirstFrameReady = true;
         settleIfGatesOpen(reason);
@@ -972,6 +1060,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     DateTime? firstAdvanceAt;
 
     _firstFrameWatch = _player.stream.position.listen((pos) {
+      // Ignore bogus "position ≈ duration" on fresh strm playback - the
+      // position guard will seek to 0 and the real first frame will follow.
+      if (_isFreshPlaybackPositionBogus(pos)) return;
       if (isResumePositionSettled(pos, resumeTarget)) {
         _positionFirstFrameReady = true;
         settleIfGatesOpen('position');
@@ -1504,7 +1595,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _reportProgressOnce(EmbyPlaybackInfo i, EmbyService emby) async {
     if (_playbackReportedStopped) return;
     final pos = _player.state.position;
-    final ticks = (pos.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
+    // Suppress bogus early-playback position (mpv MKV SeekHead artifact) so
+    // Emby doesn't record a near-100% progress for a few seconds of playback.
+    final ticks = _isFreshPlaybackPositionBogus(pos)
+        ? 0
+        : (pos.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
     if (_playbackReportedStopped) return;
     await emby.reportProgress(
       itemId: widget.itemId,
@@ -1864,6 +1959,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     final pos = _player.state.position;
     final dur = _player.state.duration;
+    // Suppress false completion from the bogus early-playback position (mpv
+    // MKV SeekHead artifact): position ≈ duration would otherwise trigger
+    // auto-play-next a few seconds into a fresh episode.
+    if (_isFreshPlaybackPositionBogus(pos)) return;
     if (!isPlaybackNearEnd(pos, dur)) return;
 
     final item = _currentItem;
@@ -1957,6 +2056,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _bootstrapTimeoutTimer = null;
     _firstFrameWatch?.cancel();
     _firstFrameWatch = null;
+    _positionGuardSub?.cancel();
+    _positionGuardSub = null;
     _trySettleFirstFrame = null;
     _videoParamsFirstFrameSub?.cancel();
     _videoParamsFirstFrameSub = null;
