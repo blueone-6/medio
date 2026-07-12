@@ -288,17 +288,34 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// reported position makes Emby think the episode was fully watched.
   ///
   /// Returns false for resume sessions (mpv legitimately jumps via `--start`),
-  /// short media, positions not near the end, or after the 15s early-playback
-  /// window has elapsed.
+  /// positions that could plausibly have been reached in the elapsed wall-clock
+  /// time, or after the 15s early-playback window has elapsed.
+  ///
+  /// Two detection cases:
+  /// 1. Duration known (> 30s): position ≥ 90% of duration is bogus.
+  /// 2. Duration unknown (0 or not yet determined): mpv may report the
+  ///    SeekHead duration as position before `_player.state.duration` is
+  ///    updated. Any position > 30s within 15s of start is impossible at ≤ 2x
+  ///    rate, so it's bogus.
   bool _isFreshPlaybackPositionBogus(Duration pos) {
     if (_resumeTargetForGuard != null) return false;
     if (_bogusPositionCorrected) return false;
-    final dur = _player.state.duration;
-    if (dur <= const Duration(seconds: 30)) return false;
-    if (pos < dur * 0.9) return false;
     final started = _playbackStartedAt;
     if (started == null) return false;
-    return DateTime.now().difference(started) < const Duration(seconds: 15);
+    // Only guard the early-playback window.
+    if (DateTime.now().difference(started) >= const Duration(seconds: 15)) {
+      return false;
+    }
+
+    final dur = _player.state.duration;
+    // Case 1: Duration known - position near the end is bogus.
+    if (dur > const Duration(seconds: 30)) {
+      return pos >= dur * 0.9;
+    }
+    // Case 2: Duration unknown (0 or not yet determined) - a position beyond
+    // what could plausibly have been played in the elapsed wall-clock time is
+    // bogus. At 2x rate, 15s of wall-clock produces at most ~30s of content.
+    return pos > const Duration(seconds: 30);
   }
 
   /// Installs a one-shot watcher that force-seeks to 0 when mpv reports the
@@ -306,6 +323,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// playback instead of leaving the user stuck at the end of the file.
   void _installPositionGuard() {
     _positionGuardSub?.cancel();
+    AppLog.instance.d(
+      'Player',
+      'position guard armed: fresh=${_resumeTargetForGuard == null} '
+          'startedAt=${_playbackStartedAt?.toIso8601String()}',
+    );
     _positionGuardSub = _player.stream.position.listen((pos) {
       if (!mounted) return;
       if (_bogusPositionCorrected) return;
