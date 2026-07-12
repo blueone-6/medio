@@ -2186,6 +2186,46 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return '$h:$m:$s';
   }
 
+  /// Loading overlay dismiss button - matches PlayerTopInfo's back button style.
+  /// Shown on both the pre-controller loading screen and the post-open loading
+  /// mask so the user can always exit when playback is stuck on "正在准备播放…".
+  Widget _buildLoadingDismissButton() {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: Material(
+              color: const Color(0x99121212),
+              borderRadius: BorderRadius.circular(12),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: _leavePlayer,
+                child: const SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: Center(
+                    child: Icon(
+                      Icons.arrow_back_rounded,
+                      color: Color(0xFFE8E8E8),
+                      size: 22,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 键盘 seek 预览 OSD：居中显示目标位置、方向图标和进度条。
   Widget _buildSeekOsd() {
     final base = _arrowSeekBasePos ?? const Duration();
@@ -2421,10 +2461,41 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
 
     if (_controller == null) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: LoadingIndicator(
-          message: _reconnecting ? '正在重连…' : '正在准备播放…',
+      // Pre-controller loading screen: bootstrap is still fetching
+      // PlaybackInfo / creating the VideoController.  Wrap in PopScope + Focus
+      // so the user can always exit (Escape / back button / system back) even
+      // if the network call hangs indefinitely.
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _leavePlayer();
+        },
+        child: Focus(
+          autofocus: true,
+          onKeyEvent: (node, event) {
+            if (event is! KeyDownEvent) return KeyEventResult.ignored;
+            if (event.logicalKey == LogicalKeyboardKey.escape) {
+              unawaited(_handleEscape());
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.keyF &&
+                _canDesktopFullscreen) {
+              unawaited(_toggleFullscreen());
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
+          },
+          child: Scaffold(
+            backgroundColor: Colors.black,
+            body: Stack(
+              children: [
+                LoadingIndicator(
+                  message: _reconnecting ? '正在重连…' : '正在准备播放…',
+                ),
+                _buildLoadingDismissButton(),
+              ],
+            ),
+          ),
         ),
       );
     }
@@ -2620,8 +2691,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   Positioned.fill(
                     child: ColoredBox(
                       color: Colors.black87,
-                      child: LoadingIndicator(
-                        message: _reconnecting ? '正在重连…' : '正在准备播放…',
+                      child: Stack(
+                        children: [
+                          LoadingIndicator(
+                            message:
+                                _reconnecting ? '正在重连…' : '正在准备播放…',
+                          ),
+                          _buildLoadingDismissButton(),
+                        ],
                       ),
                     ),
                   ),
