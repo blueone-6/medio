@@ -210,6 +210,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// playback. Cancels itself once the bogus state is corrected.
   StreamSubscription<Duration>? _positionGuardSub;
 
+  /// Auto-retry counter for "Failed to open" errors during bootstrap. The
+  /// go-emby2openlist plugin resolves MediaSource lazily: the first
+  /// PlaybackInfo may return before the strm is resolved (subs=0/1), so mpv
+  /// can't open the stream. A single auto-retry gives the plugin time to
+  /// finish resolving, and the second attempt succeeds (subs=2+).
+  int _openRetryAttempts = 0;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -393,6 +400,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           !_codecFallbackAttempted) {
         AppLog.instance.w('Player', 'recoverable codec error: $text');
         unawaited(_handleRecoverableCodecError(text));
+        return;
+      }
+      // Auto-retry "Failed to open" during bootstrap - common with
+      // go-emby2openlist lazy MediaSource resolution: the first PlaybackInfo
+      // returns before the plugin resolves the strm, so mpv can't open the
+      // stream. A single auto-retry (which re-fetches PlaybackInfo) lets the
+      // plugin finish and the second open succeeds.
+      if (text.toLowerCase().contains('failed to open') &&
+          _info != null &&
+          !_bootstrapCancelled &&
+          _openRetryAttempts < 1) {
+        _openRetryAttempts++;
+        AppLog.instance.w(
+          'Player',
+          'auto-retry after "Failed to open" (attempt=$_openRetryAttempts)',
+        );
+        unawaited(_autoRetryAfterOpenFailure());
         return;
       }
       AppLog.instance.e('Player', 'playback error: $text');
@@ -702,6 +726,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Future<void> _retryPlayback() async {
+    _openRetryAttempts = 0;
+    await _preparePlaybackRetry();
+    if (!mounted) return;
+    setState(() {
+      _error = null;
+      _loading = true;
+      _reconnecting = false;
+    });
+    await _bootstrap();
+  }
+
+  /// Auto-retry bootstrap after "Failed to open" - distinct from
+  /// [_retryPlayback] so the [_openRetryAttempts] counter isn't reset,
+  /// preventing infinite loops.
+  Future<void> _autoRetryAfterOpenFailure() async {
     await _preparePlaybackRetry();
     if (!mounted) return;
     setState(() {
