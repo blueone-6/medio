@@ -19,6 +19,17 @@ final embyResumeProvider = FutureProvider<List<EmbyMediaItem>>((ref) {
   return ref.watch(embyServiceProvider).getResume(limit: limit);
 });
 
+/// 桌面首页 Hero 轮播：最新加入的电影/剧集（含评分、类型、简介字段）。
+final homeHeroProvider = FutureProvider<List<EmbyMediaItem>>((ref) {
+  return ref.watch(embyServiceProvider).getItems(
+        includeItemTypes: 'Movie,Series',
+        recursive: true,
+        limit: 12,
+        sortBy: 'DateCreated',
+        sortOrder: 'Descending',
+      );
+});
+
 /// Browses a library folder, or with [includeItemTypes] set applies the same
 /// Emby/Jellyfin query as emby_client `movies.vue` / `tv.vue` (recursive + type filter).
 typedef EmbyLibraryListArg = ({
