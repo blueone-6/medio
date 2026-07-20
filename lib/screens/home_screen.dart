@@ -86,6 +86,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.invalidate(embyResumeProvider);
     ref.invalidate(embyLatestProvider);
     ref.invalidate(homeHeroProvider);
+    ref.invalidate(embyLibraryItemsProvider);
     ref.invalidate(homeRecommendationProvider);
   }
 
@@ -110,7 +111,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ref.invalidate(embyLibraryItemsProvider);
         await Future.wait([
           ref.read(embyResumeProvider.future),
-          ref.read(homeRecommendationProvider.future),
+          ref.read(homeHeroProvider.future),
         ]);
       } else if (libs.isNotEmpty) {
         final scope = _desktopLibraryScope(libs);
