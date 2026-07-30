@@ -19,11 +19,9 @@ import '../utils/user_facing_error.dart';
 import '../widgets/empty_state_view.dart';
 import '../widgets/error_view.dart';
 import '../widgets/library/library_root_picker.dart';
-import '../widgets/home/continue_watching_pc_row.dart';
+import '../widgets/home/continue_watching_pc_section.dart';
 import '../widgets/home/continue_watching_section.dart';
 import '../widgets/home/home_layout.dart';
-import '../widgets/home/home_pc_hero_carousel.dart';
-import '../widgets/home/home_pc_library_sections.dart';
 import '../widgets/home/home_pc_search_header.dart';
 import '../widgets/home/home_pc_sidebar.dart';
 import '../widgets/home/home_search_bar.dart';
@@ -85,7 +83,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _onAutoRefresh() {
     ref.invalidate(embyResumeProvider);
     ref.invalidate(embyLatestProvider);
-    ref.invalidate(homeHeroProvider);
     ref.invalidate(homeRecommendationProvider);
   }
 
@@ -106,8 +103,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ref.invalidate(embySimilarItemsProvider);
       final libs = await ref.read(embyLibrariesProvider.future);
       if (_desktopNav == HomePcNavItem.home) {
-        ref.invalidate(homeHeroProvider);
-        ref.invalidate(embyLibraryItemsProvider);
         await Future.wait([
           ref.read(embyResumeProvider.future),
           ref.read(homeRecommendationProvider.future),
@@ -186,8 +181,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final resume = resumeAsync.value ?? const <EmbyMediaItem>[];
       switch (_desktopNav) {
         case HomePcNavItem.home:
-          return _buildDesktopHomeMain(
-              context, emby, const <EmbyLibrary>[], resume, resumeAsync);
+          return _buildDesktopHomeMain(context, emby, resume, resumeAsync);
         case HomePcNavItem.settings:
           return _buildDesktopSettingsPane();
         case HomePcNavItem.movies:
@@ -471,8 +465,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   ) {
     switch (_desktopNav) {
       case HomePcNavItem.home:
-        return _buildDesktopHomeMain(
-            context, emby, libraries, resume, resumeAsync);
+        return _buildDesktopHomeMain(context, emby, resume, resumeAsync);
       case HomePcNavItem.settings:
         return _buildDesktopSettingsPane();
       case HomePcNavItem.movies:
@@ -490,21 +483,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  void _openLibraryFromHome(EmbyLibrary library) {
-    setState(() {
-      _desktopNav = HomePcNavItem.library;
-      _desktopAllLibraryId = library.id;
-      _libraryBrowseStack.clear();
-      _desktopSearchDebounce?.cancel();
-      _desktopSearchInput = '';
-      _desktopSearchTerm = '';
-    });
-  }
-
   Widget _buildDesktopHomeMain(
     BuildContext context,
     EmbyService emby,
-    List<EmbyLibrary> libraries,
     List<EmbyMediaItem> resume,
     AsyncValue<List<EmbyMediaItem>> resumeAsync,
   ) {
@@ -534,9 +515,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            HomePcHeroCarousel(emby: emby),
-                            const SizedBox(height: HomeLayout.pcSectionGap),
-                            ContinueWatchingPcRow(
+                            ContinueWatchingPcSection(
                               items: resume,
                               emby: emby,
                               onViewAll: () => context.push('/recent-play'),
@@ -549,14 +528,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               onRetry: () => ref.invalidate(embyResumeProvider),
                               onOpenSettings: _openDesktopSettings,
                             ),
-                            if (libraries.isNotEmpty) ...[
-                              const SizedBox(height: HomeLayout.pcSectionGap),
-                              HomePcLibrarySections(
-                                libraries: libraries,
-                                emby: emby,
-                                onOpenLibrary: _openLibraryFromHome,
-                              ),
-                            ],
+                            const SizedBox(height: HomeLayout.pcSectionGap),
+                            RecommendationSection(
+                              emby: emby,
+                              crossAxisCount: HomeLayout.pcRecommendColumns,
+                              filterStyle: HomeRecommendFilterStyle.pill,
+                              wrapInPadding: false,
+                              usePcSectionTitle: true,
+                              onOpenSettings: _openDesktopSettings,
+                            ),
                           ],
                         ),
                       ),
