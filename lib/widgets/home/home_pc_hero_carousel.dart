@@ -31,7 +31,6 @@ class _HomePcHeroCarouselState extends ConsumerState<HomePcHeroCarousel> {
   static const _autoAdvanceInterval = Duration(seconds: 8);
 
   int _index = 0;
-  int _slideCount = 0;
   Timer? _autoTimer;
   var _hovered = false;
 
@@ -54,7 +53,6 @@ class _HomePcHeroCarouselState extends ConsumerState<HomePcHeroCarousel> {
   void _goTo(int index) {
     if (!mounted || index == _index) return;
     setState(() => _index = index);
-    _restartAutoTimer(_slideCount);
   }
 
   List<EmbyMediaItem> _slides(List<EmbyMediaItem> items) {
@@ -86,12 +84,7 @@ class _HomePcHeroCarouselState extends ConsumerState<HomePcHeroCarousel> {
     if (index != _index) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _goTo(index));
     }
-    if (slides.length != _slideCount) {
-      _slideCount = slides.length;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _restartAutoTimer(slides.length);
-      });
-    }
+    _restartAutoTimer(slides.length);
 
     final item = slides[index];
 
