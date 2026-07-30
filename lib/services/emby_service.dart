@@ -347,11 +347,36 @@ class EmbyService {
         '/Users/$userId/Items/Latest',
         queryParameters: {
           'Limit': limit,
-          'Fields': 'Overview,PrimaryImageTag,BackdropImageTags,UserData,Genres,ProductionYear',
+          'Fields': 'Overview,PrimaryImageTag,BackdropImageTags,UserData,Genres,ProductionYear,DateCreated,SeriesId,SeriesName,ParentIndexNumber,IndexNumber',
         },
         options: Options(headers: await _embyRequestHeaders()),
       );
       final items = res.data ?? [];
+      return items.map((e) => EmbyMediaItem.fromJson(e as Map<String, dynamic>)).toList();
+    } on DioException catch (e) {
+      throwApiException(e);
+    }
+  }
+
+  /// 最近入库的分集（按 DateCreated 倒序），用于识别哪些剧集有新集数入库。
+  Future<List<EmbyMediaItem>> getLatestEpisodes({int limit = 50}) async {
+    final userId = _settings.embyUserId;
+    if (userId == null) throw ApiException('Not logged in');
+    _dio.options.baseUrl = _embyRoot;
+    try {
+      final res = await _dio.get<Map<String, dynamic>>(
+        '/Users/$userId/Items',
+        queryParameters: {
+          'Limit': limit,
+          'Recursive': true,
+          'IncludeItemTypes': 'Episode',
+          'SortBy': 'DateCreated',
+          'SortOrder': 'Descending',
+          'Fields': 'SeriesId,SeriesName,DateCreated,ParentIndexNumber,IndexNumber',
+        },
+        options: Options(headers: await _embyRequestHeaders()),
+      );
+      final items = res.data?['Items'] as List<dynamic>? ?? [];
       return items.map((e) => EmbyMediaItem.fromJson(e as Map<String, dynamic>)).toList();
     } on DioException catch (e) {
       throwApiException(e);
@@ -1086,7 +1111,7 @@ class EmbyService {
     try {
       final params = <String, dynamic>{
         'Limit': '$limit',
-        'Fields': 'Overview,PrimaryImageTag,ProductionYear,CommunityRating,Genres',
+        'Fields': 'Overview,PrimaryImageTag,ProductionYear,CommunityRating,Genres,DateCreated',
       };
       if (userId != null && userId.isNotEmpty) {
         params['UserId'] = userId;

@@ -17,6 +17,7 @@ abstract final class StorageKeys {
   static const subtitleFontSize = 'subtitle_font_size';
   static const subtitleOffsetMs = 'subtitle_offset_ms';
   static const homeRecentPlayLimit = 'home_recent_play_limit';
+  static const recentAddedWindowDays = 'recent_added_window_days';
   static const autoPlayNext = 'auto_play_next';
   static const playHistory = 'play_history_json';
 }

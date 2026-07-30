@@ -11,6 +11,7 @@ import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_text.dart';
 import '../../models/emby/emby_media_item.dart';
 import '../../providers/home_recommendation_provider.dart';
+import '../../providers/settings_provider.dart';
 import '../../services/emby_service.dart';
 import '../../utils/media_navigation.dart';
 import '../../utils/user_facing_error.dart';
@@ -495,7 +496,7 @@ String _pcRecommendTitle(EmbyMediaItem item) {
   return item.mediaCardDisplayTitle;
 }
 
-class HomeRecommendCard extends StatefulWidget {
+class HomeRecommendCard extends ConsumerStatefulWidget {
   const HomeRecommendCard({
     super.key,
     required this.item,
@@ -520,10 +521,10 @@ class HomeRecommendCard extends StatefulWidget {
   final String? imageUrl;
 
   @override
-  State<HomeRecommendCard> createState() => _HomeRecommendCardState();
+  ConsumerState<HomeRecommendCard> createState() => _HomeRecommendCardState();
 }
 
-class _HomeRecommendCardState extends State<HomeRecommendCard> {
+class _HomeRecommendCardState extends ConsumerState<HomeRecommendCard> {
   final _hovered = ValueNotifier(false);
 
   @override
@@ -575,13 +576,23 @@ class _HomeRecommendCardState extends State<HomeRecommendCard> {
             isTv ? TvImageCache.memCachePx(context, posterW) : null;
 
         // 静态 badge 层 — 永不随 hover 重建
+        final recentWindow = Duration(
+          days: ref.read(settingsServiceProvider).recentAddedWindowDays,
+        );
+        final showRecent = item.isRecentlyAdded(recentWindow);
         final staticBadges = [
           Positioned(
             top: badgeInset,
             left: badgeInset,
             child: HomeMediaTypeBadge(label: item.mediaTypeLabel),
           ),
-          if (item.mediaCardRatingText != null)
+          if (showRecent)
+            Positioned(
+              top: badgeInset,
+              right: badgeInset,
+              child: const HomeRecentAddedBadge(),
+            )
+          else if (item.mediaCardRatingText != null)
             Positioned(
               top: badgeInset,
               right: badgeInset,

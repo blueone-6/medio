@@ -75,6 +75,22 @@ class SettingsService {
         v.clamp(homeRecentPlayLimitMin, homeRecentPlayLimitMax),
       );
 
+  /// 「为你推荐」优先展示最近入库媒体的窗口（天，1–90，默认 7）。
+  static const int recentAddedWindowDaysMin = 1;
+  static const int recentAddedWindowDaysMax = 90;
+  static const int recentAddedWindowDaysDefault = 7;
+
+  int get recentAddedWindowDays {
+    final raw = _storage.getInt(StorageKeys.recentAddedWindowDays);
+    final v = raw ?? recentAddedWindowDaysDefault;
+    return v.clamp(recentAddedWindowDaysMin, recentAddedWindowDaysMax);
+  }
+
+  Future<void> setRecentAddedWindowDays(int v) => _storage.setInt(
+        StorageKeys.recentAddedWindowDays,
+        v.clamp(recentAddedWindowDaysMin, recentAddedWindowDaysMax),
+      );
+
   bool get autoPlayNext => _storage.getBool(StorageKeys.autoPlayNext) ?? true;
 
   Future<void> setAutoPlayNext(bool v) =>

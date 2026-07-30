@@ -29,6 +29,8 @@ class EmbyMediaItem {
     this.productionLocations,
     this.communityRating,
     this.lastPlayedDate,
+    this.dateCreated,
+    this.hasRecentlyAddedEpisode = false,
     this.people,
     this.genres,
     this.videoCodec,
@@ -70,6 +72,13 @@ class EmbyMediaItem {
   final List<String>? productionLocations;
   final double? communityRating;
   final DateTime? lastPlayedDate;
+
+  /// Emby [DateCreated] - 入库时间，用于「最近入库」推荐排序与角标。
+  final DateTime? dateCreated;
+
+  /// 该剧集是否有新分集在「最近入库」窗口内入库（Episode → Series 归约时设置）。
+  final bool hasRecentlyAddedEpisode;
+
   final List<EmbyPerson>? people;
 
   /// Emby [Genres] — 悬疑、剧情等，用于海报「类型」行。
@@ -400,6 +409,7 @@ class EmbyMediaItem {
       communityRating: (json['CommunityRating'] as num?)?.toDouble(),
       lastPlayedDate:
           lastPlayedRaw != null ? DateTime.tryParse(lastPlayedRaw) : null,
+      dateCreated: _parseDateField(json['DateCreated']),
       people: _parsePeople(json['People']),
       genres: _parseStringList(json['Genres']),
       videoCodec: streamInfo.videoCodec,
@@ -409,6 +419,13 @@ class EmbyMediaItem {
       videoHeight: streamInfo.videoHeight,
       videoWidth: streamInfo.videoWidth,
     );
+  }
+
+  static DateTime? _parseDateField(dynamic raw) {
+    if (raw is String && raw.trim().isNotEmpty) {
+      return DateTime.tryParse(raw);
+    }
+    return null;
   }
 
   static List<EmbyPerson>? _parsePeople(dynamic raw) {
@@ -466,6 +483,17 @@ extension EmbyMediaItemDisplayTitles on EmbyMediaItem {
     final r = communityRating;
     if (r == null || r <= 0) return null;
     return r.toStringAsFixed(1);
+  }
+
+  /// 是否在「最近入库」窗口内（[window] 天，默认由设置提供）。
+  /// 对剧集同时检查自身入库时间或是否有新分集近期入库。
+  bool isRecentlyAdded(Duration window, {DateTime? now}) {
+    if (hasRecentlyAddedEpisode) return true;
+    final d = dateCreated;
+    if (d == null) return false;
+    final ref = now ?? DateTime.now();
+    if (!ref.isAfter(d)) return false;
+    return ref.difference(d) <= window;
   }
 
   /// 海报第一块：「剧名.季号」（如 `命运石之门.S1`），仅用 [parentIndexNumber]，不用 [seasonName]。
@@ -661,6 +689,8 @@ extension EmbyMediaItemDisplayTitles on EmbyMediaItem {
       isAtmos: isAtmos,
       videoHeight: videoHeight,
       videoWidth: videoWidth,
+      dateCreated: dateCreated,
+      hasRecentlyAddedEpisode: hasRecentlyAddedEpisode,
     );
   }
 }

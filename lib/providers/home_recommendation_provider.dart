@@ -48,27 +48,106 @@ Set<String> _resumeExcludeKeys(List<EmbyMediaItem> resume) {
   return keys;
 }
 
+/// 从分集列表中找出窗口内新入库的分集，返回对应剧集 ID 集合。
+Set<String> _recentEpisodeSeriesIds(
+  List<EmbyMediaItem> episodes,
+  Duration recentWindow,
+) {
+  final ids = <String>{};
+  for (final item in episodes) {
+    if (item.type != 'Episode') continue;
+    if (!item.isRecentlyAdded(recentWindow)) continue;
+    final sid = item.seriesId?.trim();
+    if (sid != null && sid.isNotEmpty) ids.add(sid);
+  }
+  return ids;
+}
+
+/// 将 [display] 标记为「有新分集入库」。
+EmbyMediaItem _markSeriesRecentlyAdded(EmbyMediaItem display) {
+  return EmbyMediaItem(
+    id: display.id,
+    name: display.name,
+    type: display.type,
+    overview: display.overview,
+    runTimeTicks: display.runTimeTicks,
+    productionYear: display.productionYear,
+    seriesName: display.seriesName,
+    seasonName: display.seasonName,
+    parentIndexNumber: display.parentIndexNumber,
+    indexNumber: display.indexNumber,
+    primaryImageTag: display.primaryImageTag,
+    primaryImageItemId: display.primaryImageItemId,
+    parentThumbItemId: display.parentThumbItemId,
+    parentThumbImageTag: display.parentThumbImageTag,
+    seriesPrimaryImageTag: display.seriesPrimaryImageTag,
+    logoImageTag: display.logoImageTag,
+    backdropImageTags: display.backdropImageTags,
+    seriesId: display.seriesId,
+    seasonId: display.seasonId,
+    userDataPlayedPercentage: display.userDataPlayedPercentage,
+    userDataPlayed: display.userDataPlayed,
+    userDataPlaybackPositionTicks: display.userDataPlaybackPositionTicks,
+    productionLocations: display.productionLocations,
+    communityRating: display.communityRating,
+    lastPlayedDate: display.lastPlayedDate,
+    dateCreated: display.dateCreated,
+    hasRecentlyAddedEpisode: true,
+    people: display.people,
+    genres: display.genres,
+    videoCodec: display.videoCodec,
+    videoRange: display.videoRange,
+    audioCodec: display.audioCodec,
+    isAtmos: display.isAtmos,
+    videoHeight: display.videoHeight,
+    videoWidth: display.videoWidth,
+  );
+}
+
 List<EmbyMediaItem> _mergeRecommendItems(
   List<EmbyMediaItem> raw,
   Set<String> excludeKeys,
-) {
+  Duration recentWindow, {
+  Set<String> recentSeriesIds = const {},
+}) {
   final seen = <String>{};
   final out = <EmbyMediaItem>[];
   for (final item in raw) {
     if (!_isRecommendableType(item.type)) continue;
-    final display = item.toRecommendDisplayItem();
+    var display = item.toRecommendDisplayItem();
+    if (display.type == 'Series' && recentSeriesIds.contains(display.id)) {
+      display = _markSeriesRecentlyAdded(display);
+    }
     final key = display.recommendDedupKey;
     if (excludeKeys.contains(key) || excludeKeys.contains('item:${display.id}')) {
       continue;
     }
     if (!seen.add(key)) continue;
     out.add(display);
-    if (out.length >= _targetCount) break;
   }
+  // 优先最近入库：窗口内按入库时间倒序，其余按评分倒序补位。
+  out.sort((a, b) => _recommendPriorityCompare(a, b, recentWindow));
+  if (out.length > _targetCount) out.removeRange(_targetCount, out.length);
   return out;
 }
 
-int _ratingSort(EmbyMediaItem a, EmbyMediaItem b) {
+/// 推荐排序：最近入库优先（按 [EmbyMediaItem.dateCreated] 倒序），其次按社区评分倒序。
+int _recommendPriorityCompare(
+  EmbyMediaItem a,
+  EmbyMediaItem b,
+  Duration recentWindow,
+) {
+  final aRecent = a.isRecentlyAdded(recentWindow);
+  final bRecent = b.isRecentlyAdded(recentWindow);
+  if (aRecent != bRecent) return aRecent ? -1 : 1;
+  if (aRecent) {
+    final da = a.dateCreated;
+    final db = b.dateCreated;
+    if (da != null && db != null) return db.compareTo(da);
+    if (da != null) return -1;
+    if (db != null) return 1;
+    return 0;
+  }
   final ra = a.communityRating ?? 0;
   final rb = b.communityRating ?? 0;
   return rb.compareTo(ra);
@@ -101,13 +180,29 @@ class HomeRecommendationNotifier extends AsyncNotifier<List<EmbyMediaItem>> {
 
   Future<List<EmbyMediaItem>> _load() async {
     final exclude = await _recommendExcludeKeys(ref);
+    final recentWindow = Duration(
+      days: ref.read(settingsServiceProvider).recentAddedWindowDays,
+    );
+    final emby = ref.read(embyServiceProvider);
+
+    // 预取最近入库的分集，建立「有新集数的剧集」集合；这是识别老剧新集的关键。
+    Set<String> recentSeriesIds = {};
+    try {
+      final latestEpisodes = await emby.getLatestEpisodes(limit: 50);
+      recentSeriesIds = _recentEpisodeSeriesIds(latestEpisodes, recentWindow);
+    } catch (_) {}
+
     List<EmbyMediaItem> collected = [];
 
     // Phase 1 — fast path (usually warm from home Latest).
     try {
       final latest = await ref.read(embyLatestProvider.future);
-      final fallback = [...latest]..sort(_ratingSort);
-      final quick = _mergeRecommendItems(fallback, exclude);
+      final quick = _mergeRecommendItems(
+        latest,
+        exclude,
+        recentWindow,
+        recentSeriesIds: recentSeriesIds,
+      );
       if (quick.isNotEmpty) {
         state = AsyncData(quick);
         if (quick.length >= _targetCount) {
@@ -117,7 +212,6 @@ class HomeRecommendationNotifier extends AsyncNotifier<List<EmbyMediaItem>> {
     } catch (_) {}
 
     // Phase 2 — personalized similar items.
-    final emby = ref.read(embyServiceProvider);
     final seeds = await _recommendSeeds(ref);
     if (seeds.isNotEmpty) {
       final similarBatches = await Future.wait(
@@ -128,14 +222,23 @@ class HomeRecommendationNotifier extends AsyncNotifier<List<EmbyMediaItem>> {
       }
     }
 
-    var result = _mergeRecommendItems(collected, exclude);
+    var result = _mergeRecommendItems(
+      collected,
+      exclude,
+      recentWindow,
+      recentSeriesIds: recentSeriesIds,
+    );
 
     if (result.length < _targetCount) {
       try {
         final latest = await ref.read(embyLatestProvider.future);
-        final fallback = [...latest]..sort(_ratingSort);
-        collected = [...collected, ...fallback];
-        result = _mergeRecommendItems(collected, exclude);
+        collected = [...collected, ...latest];
+        result = _mergeRecommendItems(
+          collected,
+          exclude,
+          recentWindow,
+          recentSeriesIds: recentSeriesIds,
+        );
       } catch (_) {}
     }
 

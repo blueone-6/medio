@@ -120,6 +120,30 @@ class HomeRatingBadge extends StatelessWidget {
   }
 }
 
+/// "new" pill - matches [HomeRatingBadge] glass pill style.
+class HomeRecentAddedBadge extends StatelessWidget {
+  const HomeRecentAddedBadge({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final textColor = HomeGlassTokens.ratingBadgeForeground(cs);
+    return _HomeBadgeShell(
+      useBlur: HomeGlassTokens.usePosterBlur(cs),
+      fillColor: HomeGlassTokens.ratingBadgeFill(cs),
+      borderColor: HomeGlassTokens.ratingBadgeBorder(cs),
+      child: Text(
+        'new',
+        textAlign: TextAlign.center,
+        textHeightBehavior: HomeBadgeMetrics.textHeightBehavior,
+        strutStyle: HomeBadgeMetrics.ratingStrutStyle,
+        style: HomeTypography.captionXs(textColor, fontWeight: FontWeight.w700)
+            .copyWith(letterSpacing: 0.5, height: 1.0),
+      ),
+    );
+  }
+}
+
 class _HomeBadgeShell extends StatelessWidget {
   const _HomeBadgeShell({
     required this.child,

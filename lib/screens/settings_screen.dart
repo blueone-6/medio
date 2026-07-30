@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../core/layout/platform_layout.dart';
 import '../providers/emby_provider.dart';
 import '../providers/home_hub_section_provider.dart';
+import '../providers/home_recommendation_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/settings_service.dart';
 import '../core/theme/app_spacing.dart';
@@ -45,9 +46,10 @@ class SettingsScreen extends ConsumerWidget {
             onActivate: () => context.push('/settings/servers'),
           ),
           _TvHomeRecentPlayLimitTile(settings: settings, ref: ref, order: 2),
-          _TvSubtitleFontSizeTile(settings: settings, order: 3),
+          _TvRecentAddedWindowTile(settings: settings, ref: ref, order: 3),
+          _TvSubtitleFontSizeTile(settings: settings, order: 4),
           TvFocusListTile(
-            traversalOrder: 4,
+            traversalOrder: 5,
             icon: Icons.palette_outlined,
             title: '主题设置',
             subtitle:
@@ -55,14 +57,14 @@ class SettingsScreen extends ConsumerWidget {
             onActivate: () => context.push('/settings/theme'),
           ),
           TvFocusListTile(
-            traversalOrder: 5,
+            traversalOrder: 6,
             icon: Icons.bug_report_outlined,
             title: '诊断',
             subtitle: '日志路径 · 启动耗时 · API 调用',
             onActivate: () => context.push('/diagnostics'),
           ),
           TvFocusListTile(
-            traversalOrder: 6,
+            traversalOrder: 7,
             icon: Icons.info_outline,
             title: '关于',
             onActivate: () => context.push('/about'),
@@ -105,6 +107,7 @@ class SettingsScreen extends ConsumerWidget {
           title: '播放',
           children: [
             _HomeRecentPlayLimitTile(settings: settings, ref: ref),
+            _RecentAddedWindowTile(settings: settings, ref: ref),
             _SubtitleFontSizeTile(settings: settings),
           ],
         ),
@@ -190,6 +193,57 @@ class _TvHomeRecentPlayLimitTileState extends State<_TvHomeRecentPlayLimitTile> 
         widget.ref.invalidate(embyResumeProvider);
         widget.ref.invalidate(homeHubSectionProvider('recent'));
         if (mounted) setState(() => _limit = n.toDouble());
+      },
+    );
+  }
+}
+
+class _TvRecentAddedWindowTile extends StatefulWidget {
+  const _TvRecentAddedWindowTile({
+    required this.settings,
+    required this.ref,
+    required this.order,
+  });
+
+  final SettingsService settings;
+  final WidgetRef ref;
+  final double order;
+
+  @override
+  State<_TvRecentAddedWindowTile> createState() =>
+      _TvRecentAddedWindowTileState();
+}
+
+class _TvRecentAddedWindowTileState extends State<_TvRecentAddedWindowTile> {
+  late double _days;
+
+  @override
+  void initState() {
+    super.initState();
+    _days = widget.settings.recentAddedWindowDays.toDouble();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final max = SettingsService.recentAddedWindowDaysMax.toDouble();
+    final min = SettingsService.recentAddedWindowDaysMin.toDouble();
+
+    return TvFocusSlider(
+      traversalOrder: widget.order,
+      icon: Icons.new_releases_outlined,
+      label: '最近入库天数',
+      value: _days,
+      min: min,
+      max: max,
+      divisions:
+          SettingsService.recentAddedWindowDaysMax - SettingsService.recentAddedWindowDaysMin,
+      valueLabel: '推荐优先展示 ${_days.toInt()} 天内入库的媒体',
+      onChanged: (v) => setState(() => _days = v),
+      onChangeEnd: (v) async {
+        final n = v.round();
+        await widget.settings.setRecentAddedWindowDays(n);
+        widget.ref.invalidate(homeRecommendationProvider);
+        if (mounted) setState(() => _days = n.toDouble());
       },
     );
   }
@@ -300,6 +354,90 @@ class _HomeRecentPlayLimitTileState extends State<_HomeRecentPlayLimitTile> {
               widget.ref.invalidate(embyResumeProvider);
               widget.ref.invalidate(homeHubSectionProvider('recent'));
               if (mounted) setState(() => _limit = n.toDouble());
+            },
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('${min.toInt()}',
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.outline,
+                      fontSize: 12)),
+              Text('${max.toInt()}',
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.outline,
+                      fontSize: 12)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RecentAddedWindowTile extends StatefulWidget {
+  const _RecentAddedWindowTile({required this.settings, required this.ref});
+
+  final SettingsService settings;
+  final WidgetRef ref;
+
+  @override
+  State<_RecentAddedWindowTile> createState() => _RecentAddedWindowTileState();
+}
+
+class _RecentAddedWindowTileState extends State<_RecentAddedWindowTile> {
+  late double _days;
+
+  @override
+  void initState() {
+    super.initState();
+    _days = widget.settings.recentAddedWindowDays.toDouble();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final max = SettingsService.recentAddedWindowDaysMax.toDouble();
+    final min = SettingsService.recentAddedWindowDaysMin.toDouble();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.new_releases_outlined, size: 22, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('最近入库天数', style: Theme.of(context).textTheme.titleSmall),
+                    Text(
+                      '推荐优先展示 ${_days.toInt()} 天内入库的媒体',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Slider(
+            value: _days,
+            min: min,
+            max: max,
+            divisions: SettingsService.recentAddedWindowDaysMax -
+                SettingsService.recentAddedWindowDaysMin,
+            label: _days.toInt().toString(),
+            onChanged: (v) => setState(() => _days = v),
+            onChangeEnd: (v) async {
+              final n = v.round();
+              await widget.settings.setRecentAddedWindowDays(n);
+              widget.ref.invalidate(homeRecommendationProvider);
+              if (mounted) setState(() => _days = n.toDouble());
             },
           ),
           Row(

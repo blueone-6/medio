@@ -1,8 +1,10 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/tv/tv_image_cache.dart';
 import '../../models/emby/emby_media_item.dart';
+import '../../providers/settings_provider.dart';
 import '../../services/emby_service.dart';
 import '../home/glass_surface.dart';
 import '../home/home_layout.dart';
@@ -11,7 +13,7 @@ import '../home/home_typography.dart';
 import '../home/poster_genre_meta.dart';
 
 /// Lean TV poster card — no hover controllers, no MouseRegion.
-class TvMediaPosterCard extends StatelessWidget {
+class TvMediaPosterCard extends ConsumerWidget {
   const TvMediaPosterCard({
     super.key,
     required this.item,
@@ -28,8 +30,11 @@ class TvMediaPosterCard extends StatelessWidget {
   final bool showTitleOverlay;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final cs = Theme.of(context).colorScheme;
+    final showRecent = item.isRecentlyAdded(
+      Duration(days: ref.watch(settingsServiceProvider).recentAddedWindowDays),
+    );
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -82,7 +87,13 @@ class TvMediaPosterCard extends StatelessWidget {
                   left: HomeLayout.pcRecommendBadgeInset,
                   child: HomeMediaTypeBadge(label: item.mediaTypeLabel),
                 ),
-                if (item.mediaCardRatingText != null)
+                if (showRecent)
+                  const Positioned(
+                    top: HomeLayout.pcRecommendBadgeInset,
+                    right: HomeLayout.pcRecommendBadgeInset,
+                    child: HomeRecentAddedBadge(),
+                  )
+                else if (item.mediaCardRatingText != null)
                   Positioned(
                     top: HomeLayout.pcRecommendBadgeInset,
                     right: HomeLayout.pcRecommendBadgeInset,
