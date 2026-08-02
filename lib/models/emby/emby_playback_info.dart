@@ -45,6 +45,24 @@ class EmbyPlaybackInfo {
     return null;
   }
 
+  /// Returns a copy with [subtitles] replaced, keeping all other fields
+  /// (playSessionId, streamUrl, etc.) intact. Used when re-fetching
+  /// subtitles after the go-emby2openlist plugin finishes lazy resolution.
+  EmbyPlaybackInfo copyWithSubtitles(List<EmbySubtitleOption> subtitles) {
+    return EmbyPlaybackInfo(
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      streamUrl: streamUrl,
+      subtitles: subtitles,
+      supportsDirectPlay: supportsDirectPlay,
+      directStreamUrl: directStreamUrl,
+      transcodingUrl: transcodingUrl,
+      fallbackStreamUrl: fallbackStreamUrl,
+      runTimeTicks: runTimeTicks,
+      strmViaEmbyStream: strmViaEmbyStream,
+    );
+  }
+
   /// Preferred text subtitle for mpv (skips PGS; ASS is OK).
   EmbySubtitleOption? get preferredTextSubtitle {
     EmbySubtitleOption? pick(EmbySubtitleOption? t) {

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_client/models/emby/emby_playback_info.dart';
+import 'package:media_client/models/emby/emby_subtitle_option.dart';
 
 void main() {
   group('EmbyPlaybackInfo subtitles', () {
@@ -294,6 +295,54 @@ void main() {
         accessToken: 't',
       );
       expect(url, 'http://host:8096/emby/Videos/a/b/Subtitles/1/Stream.vtt?api_key=t');
+    });
+
+    test('copyWithSubtitles replaces subtitles and preserves session fields', () {
+      const original = EmbyPlaybackInfo(
+        playSessionId: 'session-1',
+        mediaSourceId: 'ms-guid',
+        streamUrl: 'http://server/Videos/123/stream',
+        runTimeTicks: 14300000000,
+        strmViaEmbyStream: true,
+      );
+      // Original has no subtitles (lazy resolution: subs=0)
+      expect(original.subtitles, isEmpty);
+
+      final freshSubs = [
+        const EmbySubtitleOption(
+          index: 2,
+          label: 'Simplified Chinese',
+          streamUrl: 'http://server/Videos/123/ms-guid/Subtitles/2/Stream.srt',
+          format: 'srt',
+          language: 'chi',
+          isDefault: true,
+          isForced: false,
+          isExternal: true,
+        ),
+        const EmbySubtitleOption(
+          index: 3,
+          label: 'English',
+          streamUrl: 'http://server/Videos/123/ms-guid/Subtitles/3/Stream.ass',
+          format: 'ass',
+          language: 'eng',
+          isDefault: false,
+          isForced: false,
+          isExternal: true,
+        ),
+      ];
+      final merged = original.copyWithSubtitles(freshSubs);
+
+      // Subtitles are replaced
+      expect(merged.subtitles.length, 2);
+      expect(merged.subtitles.first.label, 'Simplified Chinese');
+      expect(merged.preferredSubtitle?.label, 'Simplified Chinese');
+
+      // Session fields are preserved (not replaced with fresh PlaybackInfo)
+      expect(merged.playSessionId, 'session-1');
+      expect(merged.mediaSourceId, 'ms-guid');
+      expect(merged.streamUrl, 'http://server/Videos/123/stream');
+      expect(merged.runTimeTicks, 14300000000);
+      expect(merged.strmViaEmbyStream, isTrue);
     });
   });
 }

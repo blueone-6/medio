@@ -237,7 +237,39 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
               ? externalCdnPlaybackHttpHeaders()
               : null));
 
-      final subtitle = pb.preferredExoTextSubtitle;
+      // go-emby2openlist resolves MediaSource lazily for strm items: the first
+      // PlaybackInfo may return empty MediaStreams (subs=0). Re-fetch to pick
+      // up subtitles before ExoPlayer opens (ExoPlayer cannot add external
+      // subtitle tracks after setSource).
+      var subtitle = pb.preferredExoTextSubtitle;
+      if (subtitle == null &&
+          pb.strmViaEmbyStream &&
+          pb.subtitles.isEmpty) {
+        for (var attempt = 0; attempt < 3 && subtitle == null; attempt++) {
+          if (attempt > 0) {
+            await Future<void>.delayed(const Duration(seconds: 2));
+          }
+          if (!mounted) return;
+          try {
+            final freshPb = await emby.getPlaybackInfo(widget.itemId);
+            if (!mounted) return;
+            if (freshPb.subtitles.isNotEmpty) {
+              subtitle = freshPb.preferredExoTextSubtitle;
+              AppLog.instance.i(
+                'TvPlayer',
+                'refetched subtitles: ${freshPb.subtitles.length} tracks '
+                    '(attempt ${attempt + 1}) itemId=${widget.itemId}',
+              );
+            }
+          } catch (e) {
+            AppLog.instance.w(
+              'TvPlayer',
+              'refetch subtitles failed (attempt ${attempt + 1}): $e',
+            );
+          }
+        }
+      }
+
       final isHdr = item.isHdr;
       final videoRange = item.videoRange;
       AppLog.instance.i(

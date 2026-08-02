@@ -175,6 +175,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   EmbyPlaybackInfo? _pendingSubtitlePb;
 
+  /// Cancels the deferred subtitle re-fetch (see [_refetchSubtitlesIfNeeded]).
+  bool _subtitleRefetchCancelled = false;
+
   /// Resume position for manual retry / recovery (ticks); overrides [hintPositionTicks].
   int? _resumeTicksOverride;
 
@@ -202,8 +205,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Duration? _resumeTargetForGuard;
 
   /// True once the position guard has force-corrected a bogus position via
-  /// seek(0). Prevents repeated correction attempts within one session.
+  /// seek(0). Prevents repeated seek(0) attempts within one session. Only
+  /// gates the guard's seek - does NOT affect [_isFreshPlaybackPositionBogus].
   bool _bogusPositionCorrected = false;
+
+  /// True once mpv has reported a position that is clearly legitimate (non-
+  /// trivial, within the playable range, and consistent with elapsed wall-clock
+  /// time). Until this latch fires, suspicious positions near the end of the
+  /// file are treated as the MKV SeekHead artifact and suppressed from
+  /// progress/completion reporting. This replaces the old behavior where
+  /// [_bogusPositionCorrected] disabled all future detection after a single
+  /// seek(0), allowing persistent bogus positions through on cold CDN streams.
+  bool _legitimatePositionSeen = false;
 
   /// Watches the position stream during early playback and force-seeks to 0
   /// when mpv reports the bogus "position ≈ duration" state on fresh strm
@@ -294,35 +307,53 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// real playback happens. The user exits after a few seconds, but the
   /// reported position makes Emby think the episode was fully watched.
   ///
-  /// Returns false for resume sessions (mpv legitimately jumps via `--start`),
-  /// positions that could plausibly have been reached in the elapsed wall-clock
-  /// time, or after the 15s early-playback window has elapsed.
+  /// Returns false for resume sessions (mpv legitimately jumps via `--start`)
+  /// or after a legitimate position has been observed (latched via
+  /// [_legitimatePositionSeen]).
   ///
-  /// Two detection cases:
-  /// 1. Duration known (> 30s): position ≥ 90% of duration is bogus.
-  /// 2. Duration unknown (0 or not yet determined): mpv may report the
-  ///    SeekHead duration as position before `_player.state.duration` is
-  ///    updated. Any position > 30s within 15s of start is impossible at ≤ 2x
-  ///    rate, so it's bogus.
+  /// Until a legitimate position is seen, positions near the end of the file
+  /// are treated as bogus:
+  /// 1. Duration known (> 30s): position >= 90% of duration is bogus.
+  /// 2. Duration unknown: a position beyond what could plausibly have been
+  ///    played in the elapsed wall-clock time (at ~2x speed) is bogus.
   bool _isFreshPlaybackPositionBogus(Duration pos) {
     if (_resumeTargetForGuard != null) return false;
-    if (_bogusPositionCorrected) return false;
+    if (_legitimatePositionSeen) return false;
     final started = _playbackStartedAt;
     if (started == null) return false;
-    // Only guard the early-playback window.
-    if (DateTime.now().difference(started) >= const Duration(seconds: 15)) {
+
+    final dur = _player.state.duration;
+    final elapsed = DateTime.now().difference(started);
+
+    // A position that is non-trivial, within the playable range, and consistent
+    // with elapsed wall-clock time (at up to 2x speed) is legitimate. Once
+    // observed, all future positions are trusted and the guard is disarmed.
+    // The pos > 500ms threshold avoids mistaking the transient position=0 from
+    // the guard's own seek(0) for legitimate playback.
+    if (pos > const Duration(milliseconds: 500) &&
+        (dur <= const Duration(seconds: 30) || pos < dur * 0.85) &&
+        pos <=
+            Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000)) {
+      _legitimatePositionSeen = true;
+      AppLog.instance.d(
+        'Player',
+        'legitimate position observed (pos=${pos.inSeconds}s '
+            'elapsed=${elapsed.inSeconds}s) - bogus guard disarmed',
+      );
       return false;
     }
 
-    final dur = _player.state.duration;
+    // Position is suspicious - check if it matches the SeekHead artifact.
     // Case 1: Duration known - position near the end is bogus.
     if (dur > const Duration(seconds: 30)) {
       return pos >= dur * 0.9;
     }
     // Case 2: Duration unknown (0 or not yet determined) - a position beyond
     // what could plausibly have been played in the elapsed wall-clock time is
-    // bogus. At 2x rate, 15s of wall-clock produces at most ~30s of content.
-    return pos > const Duration(seconds: 30);
+    // bogus. At 2x rate, T seconds of wall-clock produces at most ~2T+3s of
+    // content (3s buffer for startup jitter).
+    return pos >
+        Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000);
   }
 
   /// Installs a one-shot watcher that force-seeks to 0 when mpv reports the
@@ -677,6 +708,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// Stops first-frame watchers, timers, and incomplete bootstrap spans.
   void _cancelBootstrapInProgress({String? firstFrameVia}) {
     _bootstrapCancelled = true;
+    _subtitleRefetchCancelled = true;
     _bootstrapTimeoutTimer?.cancel();
     _bootstrapTimeoutTimer = null;
     _firstFrameWatch?.cancel();
@@ -816,6 +848,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _bootstrapWithSpan(PerfSpan span) async {
     try {
       _lastSeekAt = DateTime.now();
+      _subtitleRefetchCancelled = false;
       final emby = ref.read(embyServiceProvider);
       _emby = emby;
       final startTimeTicks =
@@ -968,6 +1001,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // the guard force-seeks to 0 to recover playback.
       _playbackStartedAt = DateTime.now();
       _bogusPositionCorrected = false;
+      _legitimatePositionSeen = false;
       _installPositionGuard();
       _pendingSubtitlePb = pb;
       span.stage('play_called');
@@ -1314,6 +1348,42 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     });
   }
 
+  /// Re-fetches PlaybackInfo to pick up subtitles that were unavailable on
+  /// the first call (go-emby2openlist lazy MediaSource resolution). Retries
+  /// up to 3 times with a 2 s interval, then re-applies the subtitle
+  /// preference with the fresh track list.
+  Future<void> _refetchSubtitlesIfNeeded(EmbyPlaybackInfo originalPb) async {
+    final emby = _emby;
+    if (emby == null) return;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (!mounted || _leavingPlayer || _subtitleRefetchCancelled) return;
+      try {
+        final freshPb = await emby.getPlaybackInfo(widget.itemId);
+        if (!mounted || _subtitleRefetchCancelled) return;
+        if (freshPb.subtitles.isNotEmpty) {
+          AppLog.instance.i(
+            'Subtitle',
+            'refetched subtitles: ${freshPb.subtitles.length} tracks '
+                '(attempt ${attempt + 1}) itemId=${widget.itemId}',
+          );
+          final merged = originalPb.copyWithSubtitles(freshPb.subtitles);
+          await _applySubtitlePreference(merged);
+          return;
+        }
+      } catch (e) {
+        AppLog.instance.w(
+          'Subtitle',
+          'refetch subtitles failed (attempt ${attempt + 1}): $e',
+        );
+      }
+    }
+    AppLog.instance.w(
+      'Subtitle',
+      'refetch subtitles exhausted (subs still 0) itemId=${widget.itemId}',
+    );
+  }
+
   /// Episode metadata, subtitles, and ep list — after loading overlay drops.
   void _runPostFirstFrameTasks() {
     final pb = _pendingSubtitlePb ?? _info;
@@ -1321,6 +1391,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (pb != null) {
       unawaited(_player.configureMpvSubtitlesOnce());
       unawaited(_applySubtitlePreference(pb));
+      // go-emby2openlist resolves MediaSource lazily for strm items: the
+      // first PlaybackInfo may return empty MediaStreams (subs=0), so no
+      // external subtitle is applied. Re-fetch after a delay to give the
+      // plugin time to resolve, then re-apply the subtitle preference.
+      if (pb.strmViaEmbyStream && pb.subtitles.isEmpty) {
+        unawaited(_refetchSubtitlesIfNeeded(pb));
+      }
     }
     unawaited(_loadPlayerItemMetadata());
   }
