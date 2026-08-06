@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../config/app_config.dart';
 import 'log_session.dart';
 import 'perf.dart';
 
@@ -240,7 +241,7 @@ class AppLog {
 
     try {
       final support = await getApplicationSupportDirectory();
-      _logDir = Directory('${support.path}${Platform.pathSeparator}logs');
+      _logDir = Directory('${support.path}${Platform.pathSeparator}${AppConfig.logDirectoryName}');
       await _logDir!.create(recursive: true);
       await _purgeExpired();
       await _rotateIfNeeded();
