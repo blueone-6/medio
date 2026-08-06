@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../config/app_config.dart';
 import 'app_log.dart';
 import 'log_session.dart';
 
@@ -70,7 +71,7 @@ class CrashReporter {
         _logDir = Directory(existing);
       } else {
         final support = await getApplicationSupportDirectory();
-        _logDir = Directory('${support.path}${Platform.pathSeparator}logs');
+        _logDir = Directory('${support.path}${Platform.pathSeparator}${AppConfig.logDirectoryName}');
         await _logDir!.create(recursive: true);
       }
       _rotateIfNeededSync();
