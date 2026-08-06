@@ -27,8 +27,6 @@ import '../widgets/home/home_pc_sidebar.dart';
 import '../widgets/home/home_search_bar.dart';
 import '../widgets/home/recommendation_section.dart';
 import '../widgets/loading_indicator.dart';
-import '../widgets/tv/tv_error_panel.dart';
-import '../widgets/tv/tv_keyboard_handler.dart';
 import 'home_android_shell.dart';
 import 'library_screen.dart';
 import 'settings_screen.dart';
@@ -168,6 +166,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     required EmbyService emby,
   }) {
     final libs = libraries.value;
+
+    // 首页和设置页不依赖 libraries 数据：即使媒体库加载失败也直接渲染，
+    // 确保用户始终能进入设置修改服务器配置，不会被困在错误界面。
+    if (_desktopNav == HomePcNavItem.home ||
+        _desktopNav == HomePcNavItem.settings) {
+      final resume = resumeAsync.value ?? const <EmbyMediaItem>[];
+      return _buildDesktopMainPane(
+        context,
+        libs ?? const <EmbyLibrary>[],
+        emby,
+        resume,
+        resumeAsync,
+      );
+    }
+
     if (libraries.hasError && libs == null) {
       return ErrorView.forHomeSection(
         error: libraries.error!,
@@ -177,18 +190,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
     }
     if (libraries.isLoading && libs == null) {
-      // 首页和设置页不依赖 libraries，直接渲染以避免骨架屏跳变。
-      final resume = resumeAsync.value ?? const <EmbyMediaItem>[];
-      switch (_desktopNav) {
-        case HomePcNavItem.home:
-          return _buildDesktopHomeMain(context, emby, resume, resumeAsync);
-        case HomePcNavItem.settings:
-          return _buildDesktopSettingsPane();
-        case HomePcNavItem.movies:
-        case HomePcNavItem.series:
-        case HomePcNavItem.library:
-          return const LoadingIndicator.homeFeed();
-      }
+      return const LoadingIndicator.homeFeed();
     }
 
     final resume = resumeAsync.value ?? const <EmbyMediaItem>[];
@@ -658,34 +660,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     AsyncValue<List<EmbyMediaItem>> resumeAsync,
     EmbyService emby,
   ) {
-    // Keep TvHomeShell mounted while resume refetches after leaving the player.
-    // Replacing it with a loading scaffold drops TvRemoteActions and lets the
-    // next system back finish the Activity.
     final resume = resumeAsync.value;
-    if (resume == null && resumeAsync.isLoading) {
-      return const Scaffold(
-        body: Center(child: LoadingIndicator(message: '加载首页…')),
-      );
-    }
-    if (resumeAsync.hasError && resume == null) {
-      return TvScreenShell(
-        title: '首页',
-        body: TvErrorPanel(
-          error: resumeAsync.error,
-          onRetry: () => ref.invalidate(embyResumeProvider),
-        ),
-      );
-    }
+    final resumeError = resumeAsync.hasError ? resumeAsync.error : null;
+    final resumeLoading = resume == null && resumeAsync.isLoading;
 
-    // Home tab only needs resume; library browse can load in the background.
+    // 始终使用 TvHomeShell（含侧边栏设置入口），不再用 TvScreenShell 替换
+    // 整个屏幕。resume 加载失败时在首页 tab 内展示错误 + 去设置按钮，
+    // 用户仍可通过侧边栏进入设置修改服务器配置。
     return TvHomeShell(
       libraries: libraries.value ?? const [],
       librariesLoading: libraries.isLoading,
       librariesError: libraries.hasError ? libraries.error : null,
       resume: resume ?? const [],
+      resumeError: resumeError,
+      resumeLoading: resumeLoading,
       emby: emby,
       onRefresh: _onPullRefresh,
       onRetryLibraries: () => ref.invalidate(embyLibrariesProvider),
+      onRetryResume: () => ref.invalidate(embyResumeProvider),
     );
   }
 
@@ -700,22 +692,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     if (isAndroidMobileUi && !context.isTvUi) {
-      // 与 PC 端一致：首页不依赖 libraries，直接渲染以避免骨架屏跳变。
+      // 首页不依赖 libraries，直接渲染以避免骨架屏跳变。
       final libs = libraries.value;
       final resume = resumeAsync.value;
 
-      // libraries 加载失败且无缓存 → 全屏错误
-      if (libraries.hasError && libs == null) {
-        return Scaffold(
-          body: ErrorView.forHomeSection(
-            error: libraries.error!,
-            section: HomeLoadSection.libraries,
-            onRetry: () => ref.invalidate(embyLibrariesProvider),
-            onOpenSettings: () => context.push('/settings/servers'),
-          ),
-        );
-      }
-
+      // 不再用全屏错误替换整个 Shell：保留底部导航栏，让用户始终能
+      // 切换到「更多」抽屉进入设置。媒体库加载失败时在 libraryTab 内
+      // 展示错误，首页仍可正常使用（续播内容或续播错误）。
       return HomeAndroidShell(
         hideHomeAppBar: true,
         homeTab: resumeAsync.hasError && resume == null
@@ -731,9 +714,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 resume ?? const <EmbyMediaItem>[],
                 isLoading: resume == null && resumeAsync.isLoading,
               ),
-        libraryTab: libs != null
-            ? _buildAndroidLibraryTab(context, libs)
-            : const LoadingIndicator.posterGrid(homeRecommendStyle: true),
+        libraryTab: libraries.hasError && libs == null
+            ? ErrorView.forHomeSection(
+                error: libraries.error!,
+                section: HomeLoadSection.libraries,
+                onRetry: () => ref.invalidate(embyLibrariesProvider),
+                onOpenSettings: () => context.push('/settings/servers'),
+              )
+            : libs != null
+                ? _buildAndroidLibraryTab(context, libs)
+                : const LoadingIndicator.posterGrid(homeRecommendStyle: true),
       );
     }
 
