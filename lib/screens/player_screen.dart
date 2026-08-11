@@ -174,7 +174,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// hasn't advanced past [_stallThreshold] within [_stallDelay], the stream
   /// is stuck (e.g. CDN stalled after first frame) and we trigger recovery.
   Timer? _stallCheckTimer;
-  static const _stallDelay = Duration(seconds: 10);
+  static const _stallDelay = Duration(seconds: 5);
   static const _stallThreshold = Duration(milliseconds: 100);
 
   /// Set when retry/error aborts an in-flight bootstrap.
@@ -396,9 +396,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _stallCheckTimer?.cancel();
     _stallCheckTimer = Timer(_stallDelay, () {
       if (!mounted || _leavingPlayer || _error != null) return;
-      // Don't fire if the user deliberately paused - only detect stalls
-      // where the player claims to be playing but position isn't advancing.
-      if (!_player.state.playing) return;
       final pos = _player.state.position;
       if (pos >= _stallThreshold) return; // Playback is progressing normally.
       AppLog.instance.w(
@@ -1112,6 +1109,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // caused by media_kit_video's Android widListener on lazy-surface
       // devices (see _installFirstFrameWatcher).
       _installFirstFrameWatcher(span, resumeAt: resumeAt);
+      // Install stall detector in parallel with first-frame watcher.
+      // If position does not advance past 100ms within 5 seconds of
+      // play(), the stream is stalled (e.g. CDN sent first frame then
+      // stopped). This fires much sooner than waiting for the 12s
+      // bootstrap timeout + 10s stall delay (22s total).
+      _installStallDetector();
       _lastSeekAt = DateTime.now();
       _progressTimer = Timer.periodic(
           const Duration(seconds: 10), (_) => unawaited(_reportProgress()));
