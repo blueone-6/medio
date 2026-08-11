@@ -634,16 +634,16 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
               }
             }
           }
-          if (!isPgsMuxedSubtitle(t)) {
-            ok = false;
-          } else {
-            ok = await SubtitleSwitchQueue.withMpv(
-              () => _player.activateMuxedSubtitle(
-                t,
-                reason: 'menu_muxed_${t.id}',
-              ),
-            );
-          }
+          // No matching Emby option — activate directly via mpv so
+          // applySubtitleRenderMode still runs (sub-ass=no for text,
+          // sub-ass=yes for PGS). Without this, text tracks selected
+          // from the mobile picker would never render.
+          ok = await SubtitleSwitchQueue.withMpv(
+            () => _player.activateMuxedSubtitle(
+              t,
+              reason: 'menu_muxed_${t.id}',
+            ),
+          );
           if (!mounted || !SubtitleSwitchQueue.isCurrent(gen)) return;
           if (!ok && isPgsMuxedSubtitle(t)) _showPgsUnavailableHint();
         } else {
@@ -1503,6 +1503,12 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
   void _showSubtitlePicker(Tracks tracks, SubtitleTrack? currentSub) {
     _notify();
+    final emby = widget.embySubtitles;
+    final nativeMuxed = _nativeMuxedTracks(tracks, emby);
+    final embeddedEmby = uniqueEmbeddedEmbySubtitles(emby);
+    final externalEmby = externalEmbySubtitles(emby);
+    final showAuto = _showAutoEmbedded(emby, nativeMuxed);
+
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: _popupBg,
@@ -1513,22 +1519,64 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
             children: [
               ListTile(
                 title: const Text('关闭字幕', style: TextStyle(color: _foreground)),
+                trailing: currentSub?.id == 'no' &&
+                        !_autoSubtitleActive &&
+                        _activeEmbySubtitleId == null
+                    ? Icon(Icons.check, color: _playerAccent(context))
+                    : null,
                 onTap: () {
-                  _player.setSubtitleTrack(SubtitleTrack.no());
                   Navigator.pop(ctx);
+                  _onSubtitleMenuSelected(SubtitleTrack.no());
                 },
               ),
-              for (final s in tracks.subtitle
-                  .where((t) => t.id != 'auto' && t.id != 'no'))
+              if (showAuto)
                 ListTile(
-                  title: Text(s.title ?? s.language ?? s.id,
-                      style: const TextStyle(color: _foreground)),
-                  trailing: currentSub?.id == s.id
+                  title: const Text('自动（内嵌）',
+                      style: TextStyle(color: _foreground)),
+                  trailing: _autoSubtitleActive
                       ? Icon(Icons.check, color: _playerAccent(context))
                       : null,
                   onTap: () {
-                    _player.setSubtitleTrack(s);
                     Navigator.pop(ctx);
+                    _onSubtitleMenuSelected(SubtitleTrack.auto());
+                  },
+                ),
+              for (final o in embeddedEmby)
+                ListTile(
+                  title:
+                      Text(o.label, style: const TextStyle(color: _foreground)),
+                  trailing: _isEmbySubtitleActive(o, currentSub)
+                      ? Icon(Icons.check, color: _playerAccent(context))
+                      : null,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _onSubtitleMenuSelected(o);
+                  },
+                ),
+              for (final t in nativeMuxed)
+                ListTile(
+                  title: Text(_subtitleMenuLabel(t),
+                      style: const TextStyle(color: _foreground)),
+                  trailing: currentSub?.id == t.id &&
+                          _activeEmbySubtitleId == null &&
+                          !_autoSubtitleActive
+                      ? Icon(Icons.check, color: _playerAccent(context))
+                      : null,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _onSubtitleMenuSelected(t);
+                  },
+                ),
+              for (final o in externalEmby)
+                ListTile(
+                  title:
+                      Text(o.label, style: const TextStyle(color: _foreground)),
+                  trailing: _isEmbySubtitleActive(o, currentSub)
+                      ? Icon(Icons.check, color: _playerAccent(context))
+                      : null,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _onSubtitleMenuSelected(o);
                   },
                 ),
             ],
