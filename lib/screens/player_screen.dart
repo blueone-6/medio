@@ -394,6 +394,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// a re-open of the stream to recover.
   void _installStallDetector() {
     _stallCheckTimer?.cancel();
+    AppLog.instance.d('Player', 'stall detector armed: delay={_stallDelay.inSeconds}s');
     _stallCheckTimer = Timer(_stallDelay, () {
       if (!mounted || _leavingPlayer || _error != null) return;
       final pos = _player.state.position;
