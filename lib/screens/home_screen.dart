@@ -50,6 +50,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final List<({String id, String name})> _libraryBrowseStack = [];
   Timer? _autoRefreshTimer;
   Timer? _desktopSearchDebounce;
+  Timer? _autoRetryTimer;
+  int _autoRetryAttempt = 0;
+  static const _maxAutoRetryAttempts = 8;
   late final FocusNode _desktopSearchFocusNode;
   String _desktopSearchInput = '';
   String _desktopSearchTerm = '';
@@ -62,8 +65,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _desktopSearchFocusNode = FocusNode();
     _autoRefreshTimer =
         Timer.periodic(const Duration(minutes: 10), (_) => _onAutoRefresh());
+    // Auto-retry library loading when the server is temporarily unreachable
+    // (e.g. Emby server still starting up). Exponential backoff: 5s, 10s, 15s,
+    // 30s, 30s, ... up to 8 attempts. Cancels automatically on success or when
+    // the user manually retries.
+    ref.listenManual(embyLibrariesProvider, (prev, next) {
+      if (next.hasError && !next.isLoading) {
+        _scheduleAutoRetry();
+      } else if (next.hasValue) {
+        _cancelAutoRetry();
+      }
+    });
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _finishAppStartupPerf());
+  }
+
+  void _scheduleAutoRetry() {
+    if (_autoRetryAttempt >= _maxAutoRetryAttempts) return;
+    _autoRetryTimer?.cancel();
+    _autoRetryAttempt++;
+    final delaySeconds = (_autoRetryAttempt <= 3)
+        ? 5 * _autoRetryAttempt // 5s, 10s, 15s
+        : 30; // 30s thereafter
+    _autoRetryTimer = Timer(
+      Duration(seconds: delaySeconds),
+      () {
+        if (!mounted) return;
+        ref.invalidate(embyLibrariesProvider);
+        ref.invalidate(embyResumeProvider);
+      },
+    );
+  }
+
+  void _cancelAutoRetry() {
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = null;
+    _autoRetryAttempt = 0;
   }
 
   void _finishAppStartupPerf() {
@@ -75,6 +112,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void dispose() {
     _autoRefreshTimer?.cancel();
+    _autoRetryTimer?.cancel();
     _desktopSearchDebounce?.cancel();
     _desktopSearchFocusNode.dispose();
     super.dispose();
@@ -87,6 +125,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _onPullRefresh() async {
+    _cancelAutoRetry();
     if (_isRefreshing) return;
     if (mounted) setState(() => _isRefreshing = true);
     try {

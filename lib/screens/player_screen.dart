@@ -170,6 +170,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Timer? _bootstrapTimeoutTimer;
 
+  /// Stall detector: fires after the loading mask drops. If the position
+  /// hasn't advanced past [_stallThreshold] within [_stallDelay], the stream
+  /// is stuck (e.g. CDN stalled after first frame) and we trigger recovery.
+  Timer? _stallCheckTimer;
+  static const _stallDelay = Duration(seconds: 10);
+  static const _stallThreshold = Duration(milliseconds: 100);
+
   /// Set when retry/error aborts an in-flight bootstrap.
   bool _bootstrapCancelled = false;
 
@@ -381,6 +388,89 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     });
   }
 
+  /// Detects playback stalls where the first frame decoded but the position
+  /// never advances (e.g. CDN stream stalled after initial buffer). If the
+  /// position is still below [_stallThreshold] after [_stallDelay], triggers
+  /// a re-open of the stream to recover.
+  void _installStallDetector() {
+    _stallCheckTimer?.cancel();
+    _stallCheckTimer = Timer(_stallDelay, () {
+      if (!mounted || _leavingPlayer || _error != null) return;
+      // Don't fire if the user deliberately paused - only detect stalls
+      // where the player claims to be playing but position isn't advancing.
+      if (!_player.state.playing) return;
+      final pos = _player.state.position;
+      if (pos >= _stallThreshold) return; // Playback is progressing normally.
+      AppLog.instance.w(
+        'Player',
+        'stall detected: position=${pos.inMilliseconds}ms after ${_stallDelay.inSeconds}s '
+            '- attempting recovery re-open',
+      );
+      _handlePlaybackStall();
+    });
+  }
+
+  void _cancelStallDetector() {
+    _stallCheckTimer?.cancel();
+    _stallCheckTimer = null;
+  }
+
+  /// Recovery for a playback stall: re-opens the stream at the current
+  /// position (0 for fresh playback). Resets the bootstrap state and re-runs
+  /// the full bootstrap flow, which re-resolves the CDN URL and re-opens
+  /// the stream with fresh options.
+  Future<void> _handlePlaybackStall() async {
+    if (!mounted || _leavingPlayer) return;
+    final pb = _info;
+    if (pb == null) return;
+
+    _cancelStallDetector();
+    _cancelProgressReporting();
+    _cancelNetworkRecovery();
+    _completedSub?.cancel();
+    _completedSub = null;
+    _firstFrameWatch?.cancel();
+    _firstFrameWatch = null;
+    _positionGuardSub?.cancel();
+    _positionGuardSub = null;
+    _videoParamsFirstFrameSub?.cancel();
+    _videoParamsFirstFrameSub = null;
+
+    AppLog.instance.w('Player', 'stall recovery: re-running bootstrap');
+
+    try {
+      await _player.stop();
+    } catch (_) {}
+
+    if (!mounted) return;
+
+    // Reset bootstrap state to allow a fresh run.
+    _bootstrapped = false;
+    _bootstrapCancelled = false;
+    _surfaceAttachSettled = false;
+    _positionFirstFrameReady = false;
+    _firstFrameReported = false;
+    _firstFramePerfDone = false;
+    _playbackReportedStopped = false;
+    _bogusPositionCorrected = false;
+    _legitimatePositionSeen = false;
+    _resumeTargetForGuard = null;
+    _networkRecoveryAttempts = 0;
+
+    setState(() {
+      _error = null;
+      _reconnecting = true;
+      _loading = true;
+    });
+
+    await _bootstrap();
+
+    if (!mounted) return;
+    setState(() {
+      _reconnecting = false;
+    });
+  }
+
   Duration _clampResumePosition(Duration at, int? runTimeTicks) {
     if (runTimeTicks == null || runTimeTicks <= 0) return at;
     final runtime = Duration(microseconds: runTimeTicks ~/ 10);
@@ -441,7 +531,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (text.toLowerCase().contains('failed to open') &&
           _info != null &&
           !_bootstrapCancelled &&
-          _openRetryAttempts < 1) {
+          _openRetryAttempts < 2) {
         _openRetryAttempts++;
         AppLog.instance.w(
           'Player',
@@ -572,6 +662,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         _firstFrameWatch = null;
         _positionGuardSub?.cancel();
         _positionGuardSub = null;
+        _stallCheckTimer?.cancel();
+        _stallCheckTimer = null;
 
         setState(() {
           _error = null;
@@ -711,6 +803,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _subtitleRefetchCancelled = true;
     _bootstrapTimeoutTimer?.cancel();
     _bootstrapTimeoutTimer = null;
+    _stallCheckTimer?.cancel();
+    _stallCheckTimer = null;
     _firstFrameWatch?.cancel();
     _firstFrameWatch = null;
     _positionGuardSub?.cancel();
@@ -1101,6 +1195,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (mounted && _loading) {
         setState(() => _loading = false);
       }
+      _installStallDetector();
       _runPostFirstFrameTasks();
     }
 
@@ -1504,7 +1599,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     AppLog.instance.i(
       'Player',
       'strm playback: mode=$mode openUrl=${AppLog.redactUrl(openUrl)} '
-      'headers=${headers.keys.toList()}',
+          'headers=${headers.keys.toList()}',
     );
     await _openStream(
       openUrl,
@@ -1733,6 +1828,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _reportProgressOnce(EmbyPlaybackInfo i, EmbyService emby) async {
     if (_playbackReportedStopped) return;
     final pos = _player.state.position;
+    // Cancel stall detector once playback is confirmed progressing.
+    if (pos >= _stallThreshold) {
+      _cancelStallDetector();
+    }
     // Suppress bogus early-playback position (mpv MKV SeekHead artifact) so
     // Emby doesn't record a near-100% progress for a few seconds of playback.
     final ticks = _isFreshPlaybackPositionBogus(pos)
@@ -2192,6 +2291,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _completedSub?.cancel();
     _bootstrapTimeoutTimer?.cancel();
     _bootstrapTimeoutTimer = null;
+    _stallCheckTimer?.cancel();
+    _stallCheckTimer = null;
     _firstFrameWatch?.cancel();
     _firstFrameWatch = null;
     _positionGuardSub?.cancel();

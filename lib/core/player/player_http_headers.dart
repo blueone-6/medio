@@ -116,5 +116,14 @@ extension PlayerPlaybackHttpHeaders on Player {
     await platform.setProperty('cache-secs', cacheSecs.toString());
     await platform.setProperty('demuxer-max-bytes', demuxerMaxBytes);
     await platform.setProperty('demuxer-readahead-secs', demuxerReadaheadSecs.toString());
+    // Allow seeking within the demuxer cache so that rewind/fast-forward
+    // seeks both audio and video together. Without this, seeking on remote
+    // HTTP streams can desync A/V (video seeks but audio doesn't, causing
+    // the video to fast-forward to catch up with the audio).
+    await platform.setProperty('demuxer-seekable-cache', 'yes');
+    // Network timeout: go-emby2openlist can take up to 10s to resolve strm
+    // URLs (e.g. MoviePilot P115StrmHelper). Default mpv timeout is too short,
+    // causing 'Failed to open' before the 307 redirect arrives.
+    await platform.setProperty('network-timeout', '60');
   }
 }
