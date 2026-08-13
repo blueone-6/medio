@@ -494,8 +494,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           _rearmStallDetectorAfterSeek();
           return;
         }
-        // Already corrected but still bogus — re-arm and wait for recovery.
-        _installStallDetector();
+        // seek(0) was already attempted but position is still bogus — mpv
+        // rejected the seek because it's still loading the file (media_kit's
+        // open() returns before mpv finishes loading). Trigger a full
+        // re-bootstrap which re-resolves the CDN URL and re-opens the stream,
+        // giving go-emby2openlist time to finish resolving the strm.
+        AppLog.instance.w(
+          'Player',
+          'stall detector: bogus pos=${pos.inSeconds}s persists after '
+              'seek(0) - mpv likely rejected seek during load, '
+              'triggering re-bootstrap',
+        );
+        unawaited(_handlePlaybackStall());
         return;
       }
       final advance = pos - basePos;
