@@ -376,15 +376,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
 
     // Position is suspicious - check if it matches the SeekHead artifact.
-    // Case 1: Duration known - position near the end is bogus.
-    // For resume sessions, only flag as bogus if the position is far from the
-    // resume target (mpv shouldn't jump to the end on resume).
+    // Case 1: Duration known - check both "near the end" and "beyond
+    // wall-clock plausibility". A position can be bogus even if it's not
+    // near the end — mpv may report a mid-file position from the SeekHead
+    // read that is far beyond what could have been played in the elapsed
+    // wall-clock time.
     if (dur > const Duration(seconds: 30)) {
+      // Sub-case 1a: position near the end (>= 90% of duration) is bogus
+      // unless it's a resume session near the resume target.
       if (pos >= dur * 0.9) {
         if (resumeTarget != null &&
             (pos - resumeTarget).abs() <= const Duration(seconds: 60)) {
           return false;
         }
+        return true;
+      }
+      // Sub-case 1b: position is within the playable range but far beyond
+      // what could have been played in the elapsed wall-clock time (at 2x
+      // speed). This catches mid-file bogus positions from the SeekHead
+      // artifact that are < 90% of duration but still impossible.
+      if (pos >
+          Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000)) {
         return true;
       }
       return false;
@@ -440,7 +452,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// - User pause: cache is healthy → buffering=false → re-arm, no recovery
   void _installStallDetector() {
     _stallCheckTimer?.cancel();
-    final basePos = _player.state.position;
+    var basePos = _player.state.position;
+    // Guard against bogus basePos (mpv SeekHead artifact): if the position
+    // is impossible given the elapsed wall-clock time, treat it as 0 so the
+    // detector doesn't mistake "stuck at bogus position" for "user paused
+    // at a real position".
+    if (_isFreshPlaybackPositionBogus(basePos)) {
+      AppLog.instance.w(
+        'Player',
+        'stall detector: suppressing bogus basePos=${basePos.inMilliseconds}ms, '
+            'using 0 instead',
+      );
+      basePos = Duration.zero;
+    }
     AppLog.instance.d(
       'Player',
       'stall detector armed: delay=${_stallDelay.inSeconds}s '
@@ -450,6 +474,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _stallCheckTimer = Timer(_stallDelay, () {
       if (!mounted || _leavingPlayer || _error != null) return;
       final pos = _player.state.position;
+      // If the current position is bogus, don't trust it for stall detection
+      // — the position guard will seek to 0 and real playback will follow.
+      if (_isFreshPlaybackPositionBogus(pos)) {
+        _installStallDetector();
+        return;
+      }
       final advance = pos - basePos;
 
       // Position has advanced enough — playback is healthy. Re-arm with
