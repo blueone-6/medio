@@ -474,9 +474,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _stallCheckTimer = Timer(_stallDelay, () {
       if (!mounted || _leavingPlayer || _error != null) return;
       final pos = _player.state.position;
-      // If the current position is bogus, don't trust it for stall detection
-      // — the position guard will seek to 0 and real playback will follow.
+      // If the current position is bogus (mpv SeekHead artifact), the
+      // position guard may not have fired because mpv paused and stopped
+      // emitting position stream events. Force-seek to 0/resume target here
+      // to recover playback — this is the fallback when the position guard
+      // can't trigger on its own.
       if (_isFreshPlaybackPositionBogus(pos)) {
+        if (!_bogusPositionCorrected) {
+          _bogusPositionCorrected = true;
+          final seekTarget = _resumeTargetForGuard ?? Duration.zero;
+          AppLog.instance.w(
+            'Player',
+            'stall detector: bogus pos=${pos.inSeconds}s detected during '
+                'stall check - force seeking to ${seekTarget.inSeconds}s '
+                '(position guard may have missed it due to paused stream)',
+          );
+          _lastSeekAt = DateTime.now();
+          unawaited(_player.seek(seekTarget));
+          _rearmStallDetectorAfterSeek();
+          return;
+        }
+        // Already corrected but still bogus — re-arm and wait for recovery.
         _installStallDetector();
         return;
       }
