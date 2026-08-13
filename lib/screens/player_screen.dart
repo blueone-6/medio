@@ -177,6 +177,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   static const _stallDelay = Duration(seconds: 5);
   static const _stallThreshold = Duration(milliseconds: 100);
 
+  /// Stall recovery retry counter. Limits how many times we re-bootstrap
+  /// after a CDN stall before giving up and surfacing an error. Each recovery
+  /// re-resolves the CDN URL, so a transient stall is fixed by attempt 1-2;
+  /// a persistently bad CDN edge should not loop forever.
+  static const _maxStallRecoveryAttempts = 2;
+  int _stallRecoveryAttempts = 0;
+
   /// Set when retry/error aborts an in-flight bootstrap.
   bool _bootstrapCancelled = false;
 
@@ -306,31 +313,49 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
   }
 
-  /// Detects the bogus "position ≈ duration" state on **fresh** playback.
+  /// Detects the bogus "position ≈ duration" state on fresh **and** resume
+  /// playback.
   ///
   /// Root cause: mpv's MKV demuxer reads the SeekHead/Duration at EOF to
   /// determine the file structure. On a cold CDN cache the byte-range seek
-  /// back to 0 may fail, leaving mpv reporting position ≈ duration while no
-  /// real playback happens. The user exits after a few seconds, but the
-  /// reported position makes Emby think the episode was fully watched.
+  /// back to 0 (or to the resume target) may fail, leaving mpv reporting
+  /// position ≈ duration while no real playback happens. The user exits after
+  /// a few seconds, but the reported position makes Emby think the episode
+  /// was fully watched.
   ///
-  /// Returns false for resume sessions (mpv legitimately jumps via `--start`)
-  /// or after a legitimate position has been observed (latched via
+  /// Returns false after a legitimate position has been observed (latched via
   /// [_legitimatePositionSeen]).
   ///
   /// Until a legitimate position is seen, positions near the end of the file
   /// are treated as bogus:
-  /// 1. Duration known (> 30s): position >= 90% of duration is bogus.
+  /// 1. Duration known (> 30s): position >= 90% of duration is bogus, unless
+  ///    it's a resume session and the position is near the resume target.
   /// 2. Duration unknown: a position beyond what could plausibly have been
   ///    played in the elapsed wall-clock time (at ~2x speed) is bogus.
   bool _isFreshPlaybackPositionBogus(Duration pos) {
-    if (_resumeTargetForGuard != null) return false;
     if (_legitimatePositionSeen) return false;
     final started = _playbackStartedAt;
     if (started == null) return false;
 
     final dur = _player.state.duration;
     final elapsed = DateTime.now().difference(started);
+    final resumeTarget = _resumeTargetForGuard;
+
+    // A position near the resume target (±60s) is legitimate — mpv
+    // legitimately jumps there via `--start`. Once observed, all future
+    // positions are trusted and the guard is disarmed.
+    if (resumeTarget != null &&
+        pos > const Duration(milliseconds: 500) &&
+        (pos - resumeTarget).abs() <= const Duration(seconds: 60)) {
+      _legitimatePositionSeen = true;
+      AppLog.instance.d(
+        'Player',
+        'legitimate position observed (pos=${pos.inSeconds}s '
+            'elapsed=${elapsed.inSeconds}s resume=${resumeTarget.inSeconds}s) '
+            '- bogus guard disarmed',
+      );
+      return false;
+    }
 
     // A position that is non-trivial, within the playable range, and consistent
     // with elapsed wall-clock time (at up to 2x speed) is legitimate. Once
@@ -352,20 +377,35 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     // Position is suspicious - check if it matches the SeekHead artifact.
     // Case 1: Duration known - position near the end is bogus.
+    // For resume sessions, only flag as bogus if the position is far from the
+    // resume target (mpv shouldn't jump to the end on resume).
     if (dur > const Duration(seconds: 30)) {
-      return pos >= dur * 0.9;
+      if (pos >= dur * 0.9) {
+        if (resumeTarget != null &&
+            (pos - resumeTarget).abs() <= const Duration(seconds: 60)) {
+          return false;
+        }
+        return true;
+      }
+      return false;
     }
     // Case 2: Duration unknown (0 or not yet determined) - a position beyond
     // what could plausibly have been played in the elapsed wall-clock time is
     // bogus. At 2x rate, T seconds of wall-clock produces at most ~2T+3s of
     // content (3s buffer for startup jitter).
+    // For resume sessions, allow positions near the resume target.
+    if (resumeTarget != null &&
+        (pos - resumeTarget).abs() <= const Duration(seconds: 60)) {
+      return false;
+    }
     return pos >
         Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000);
   }
 
-  /// Installs a one-shot watcher that force-seeks to 0 when mpv reports the
-  /// bogus "position ≈ duration" state on fresh strm playback, recovering
-  /// playback instead of leaving the user stuck at the end of the file.
+  /// Installs a one-shot watcher that force-seeks to the resume target (or 0
+  /// for fresh playback) when mpv reports the bogus "position ≈ duration"
+  /// state, recovering playback instead of leaving the user stuck at the end
+  /// of the file.
   void _installPositionGuard() {
     _positionGuardSub?.cancel();
     AppLog.instance.d(
@@ -378,31 +418,69 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (_bogusPositionCorrected) return;
       if (!_isFreshPlaybackPositionBogus(pos)) return;
       _bogusPositionCorrected = true;
+      final seekTarget = _resumeTargetForGuard ?? Duration.zero;
       AppLog.instance.w(
         'Player',
         'bogus position detected (pos=${pos.inSeconds}s '
-            'dur=${_player.state.duration.inSeconds}s) - seeking to 0 to recover',
+            'dur=${_player.state.duration.inSeconds}s '
+            'resume=${_resumeTargetForGuard?.inSeconds}s) - '
+            'seeking to ${seekTarget.inSeconds}s to recover',
       );
       _lastSeekAt = DateTime.now();
-      unawaited(_player.seek(Duration.zero));
+      unawaited(_player.seek(seekTarget));
     });
   }
 
-  /// Detects playback stalls where the first frame decoded but the position
-  /// never advances (e.g. CDN stream stalled after initial buffer). If the
-  /// position is still below [_stallThreshold] after [_stallDelay], triggers
-  /// a re-open of the stream to recover.
+  /// Detects playback stalls where position stops advancing (e.g. CDN stream
+  /// stalled after initial buffer, or seek target unreachable). Runs as a
+  /// continuous monitor: every [_stallDelay], checks if position has advanced
+  /// from the base. If not, distinguishes CDN stall from user pause via
+  /// [PlayerState.buffering]:
+  /// - CDN stall: mpv's cache is empty → buffering=true → trigger recovery
+  /// - User pause: cache is healthy → buffering=false → re-arm, no recovery
   void _installStallDetector() {
     _stallCheckTimer?.cancel();
-    AppLog.instance.d('Player', 'stall detector armed: delay={_stallDelay.inSeconds}s');
+    final basePos = _player.state.position;
+    AppLog.instance.d(
+      'Player',
+      'stall detector armed: delay=${_stallDelay.inSeconds}s '
+          'attempts=$_stallRecoveryAttempts/$_maxStallRecoveryAttempts '
+          'basePos=${basePos.inMilliseconds}ms',
+    );
     _stallCheckTimer = Timer(_stallDelay, () {
       if (!mounted || _leavingPlayer || _error != null) return;
       final pos = _player.state.position;
-      if (pos >= _stallThreshold) return; // Playback is progressing normally.
+      final advance = pos - basePos;
+
+      // Position has advanced enough — playback is healthy. Re-arm with
+      // the new base so we keep monitoring (catches stalls that develop
+      // mid-playback or after a seek).
+      if (advance >= _stallThreshold) {
+        _installStallDetector();
+        return;
+      }
+
+      // Position hasn't advanced. Distinguish CDN stall from user pause:
+      // - CDN stall: mpv's cache is empty → buffering=true
+      // - User pause: cache is healthy → buffering=false
+      //
+      // Fallback: if position is still near zero (< _stallThreshold), treat
+      // it as a stall regardless of buffering — this covers fresh-playback
+      // stalls where buffering might not be reported reliably on all
+      // platforms, and preserves the behavior from the original one-shot
+      // detector.
+      if (!_player.state.buffering && pos >= _stallThreshold) {
+        // Likely a user pause — re-arm but don't trigger recovery.
+        _installStallDetector();
+        return;
+      }
+
       AppLog.instance.w(
         'Player',
-        'stall detected: position=${pos.inMilliseconds}ms after ${_stallDelay.inSeconds}s '
-            '- attempting recovery re-open',
+        'stall detected: pos=${pos.inMilliseconds}ms '
+            'advance=${advance.inMilliseconds}ms '
+            'buffering=${_player.state.buffering} '
+            'after ${_stallDelay.inSeconds}s - attempting recovery',
       );
       _handlePlaybackStall();
     });
@@ -413,6 +491,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _stallCheckTimer = null;
   }
 
+  /// Re-arm the stall detector after a seek. A short delay gives mpv time
+  /// to buffer the new position before we start checking for stalls —
+  /// otherwise the brief post-seek buffering (buffering=true, position
+  /// not yet advancing) would be mistaken for a CDN stall.
+  void _rearmStallDetectorAfterSeek() {
+    _stallCheckTimer?.cancel();
+    _stallCheckTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted || _leavingPlayer || _error != null) return;
+      _installStallDetector();
+    });
+  }
+
   /// Recovery for a playback stall: re-opens the stream at the current
   /// position (0 for fresh playback). Resets the bootstrap state and re-runs
   /// the full bootstrap flow, which re-resolves the CDN URL and re-opens
@@ -421,6 +511,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (!mounted || _leavingPlayer) return;
     final pb = _info;
     if (pb == null) return;
+
+    // Limit stall recovery retries to avoid infinite loops when the CDN edge
+    // is persistently bad. Each attempt re-resolves the CDN URL; if it still
+    // stalls after _maxStallRecoveryAttempts, surface an error so the user
+    // can retry manually (which starts a fresh session counter).
+    if (_stallRecoveryAttempts >= _maxStallRecoveryAttempts) {
+      AppLog.instance.e(
+        'Player',
+        'stall recovery exhausted: $_stallRecoveryAttempts/$_maxStallRecoveryAttempts '
+            '- giving up',
+      );
+      await _failPlayback('播放停滞，请重试或切换播放源');
+      return;
+    }
+    _stallRecoveryAttempts++;
 
     _cancelStallDetector();
     _cancelProgressReporting();
@@ -434,7 +539,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _videoParamsFirstFrameSub?.cancel();
     _videoParamsFirstFrameSub = null;
 
-    AppLog.instance.w('Player', 'stall recovery: re-running bootstrap');
+    AppLog.instance.w(
+      'Player',
+      'stall recovery: re-running bootstrap '
+          '(attempt=$_stallRecoveryAttempts/$_maxStallRecoveryAttempts)',
+    );
 
     try {
       await _player.stop();
@@ -454,6 +563,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _legitimatePositionSeen = false;
     _resumeTargetForGuard = null;
     _networkRecoveryAttempts = 0;
+    // Reset "Failed to open" auto-retry counter so the new bootstrap can use
+    // its full retry budget if the go-emby2openlist plugin is still resolving.
+    _openRetryAttempts = 0;
 
     setState(() {
       _error = null;
@@ -851,6 +963,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Future<void> _retryPlayback() async {
     _openRetryAttempts = 0;
+    _stallRecoveryAttempts = 0;
     await _preparePlaybackRetry();
     if (!mounted) return;
     setState(() {
@@ -939,6 +1052,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Future<void> _bootstrapWithSpan(PerfSpan span) async {
     try {
+      AppLog.instance.w('Player', '>>> BUILD MARKER: stall-fix-v3 <<<');
       _lastSeekAt = DateTime.now();
       _subtitleRefetchCancelled = false;
       final emby = ref.read(embyServiceProvider);
@@ -1102,6 +1216,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         'After play()',
         expectedResumeAt: resumeAt,
       );
+      _installStallDetector();
       await logMpvSubtitleDecoderSupport(_player);
       if (!mounted || _bootstrapCancelled) return;
       _bootstrapped = true;
@@ -1110,12 +1225,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // caused by media_kit_video's Android widListener on lazy-surface
       // devices (see _installFirstFrameWatcher).
       _installFirstFrameWatcher(span, resumeAt: resumeAt);
-      // Install stall detector in parallel with first-frame watcher.
-      // If position does not advance past 100ms within 5 seconds of
-      // play(), the stream is stalled (e.g. CDN sent first frame then
-      // stopped). This fires much sooner than waiting for the 12s
-      // bootstrap timeout + 10s stall delay (22s total).
-      _installStallDetector();
       _lastSeekAt = DateTime.now();
       _progressTimer = Timer.periodic(
           const Duration(seconds: 10), (_) => unawaited(_reportProgress()));
@@ -1737,6 +1846,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (target > dur) target = dur;
       _player.seek(target);
       _lastSeekAt = DateTime.now();
+      _rearmStallDetectorAfterSeek();
     }
     _arrowHoldStart = null;
     _arrowHoldDirection = 0;
@@ -1835,6 +1945,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // Cancel stall detector once playback is confirmed progressing.
     if (pos >= _stallThreshold) {
       _cancelStallDetector();
+      // Reset stall recovery counter — playback is healthy now, so a future
+      // stall in this session should get a fresh retry budget.
+      if (_stallRecoveryAttempts != 0) {
+        _stallRecoveryAttempts = 0;
+      }
     }
     // Suppress bogus early-playback position (mpv MKV SeekHead artifact) so
     // Emby doesn't record a near-100% progress for a few seconds of playback.
@@ -2107,6 +2222,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (next < Duration.zero) next = Duration.zero;
     if (next > dur) next = dur;
     _player.seek(next);
+    _rearmStallDetectorAfterSeek();
   }
 
   void _adjustVolumeDelta(double delta) {
@@ -2208,6 +2324,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     final item = _currentItem;
     if (item == null) return;
+
+    // Playback is genuinely complete — stop the stall monitor so it doesn't
+    // fire during the transition to the next episode.
+    _cancelStallDetector();
 
     // 视频播放完毕，等待在途 Progress 后上报 PlaybackStopped。
     if (!_playbackReportedStopped) {
@@ -2925,6 +3045,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                               _lastSeekAt = DateTime.now();
                               _gestureSeekPreview.value = 0;
                               _onSeekAfterPlaybackStopped();
+                              _rearmStallDetectorAfterSeek();
                             },
                             volumeShowToken: _volumeShowToken,
                             gestureSeekPreviewSeconds:

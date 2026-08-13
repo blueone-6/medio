@@ -2197,10 +2197,15 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                   builder: (context, _) {
                     final pos = _player.state.position;
                     final dur = _player.state.duration;
+                    // When duration is unknown (0 or negative), show progress
+                    // as 0 instead of 1.0 (which would make the bar look full
+                    // and allow seeks to a bogus maxMs=1 target).
+                    final durKnown = dur.inMilliseconds > 1000;
                     final maxMs =
-                        dur.inMilliseconds <= 0 ? 1 : dur.inMilliseconds;
-                    final progress =
-                        (pos.inMilliseconds / maxMs).clamp(0.0, 1.0);
+                        durKnown ? dur.inMilliseconds : 1;
+                    final progress = durKnown
+                        ? (pos.inMilliseconds / maxMs).clamp(0.0, 1.0)
+                        : 0.0;
                     final vol = _player.state.volume;
                     final rate = _player.state.rate;
                     final tracks = _player.state.tracks;
@@ -2444,11 +2449,12 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                       onHorizontalDragEnd: (_) {
                         final v = _timelineDragValue;
                         if (v != null) {
+                          setState(() => _timelineDragValue = null);
+                          if (maxMs <= 1) return;
                           _notify();
                           widget.onSeek?.call();
                           _player.seek(
                               Duration(milliseconds: (v * maxMs).round()));
-                          setState(() => _timelineDragValue = null);
                         }
                       },
                       onHorizontalDragCancel: () {
@@ -2458,6 +2464,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                       },
                       onTapDown: (d) {
                         _notify();
+                        if (maxMs <= 1) return;
                         widget.onSeek?.call();
                         final x = d.localPosition.dx;
                         _player.seek(Duration(
