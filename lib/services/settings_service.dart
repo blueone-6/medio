@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import '../core/layout/platform_layout.dart';
 import '../core/storage/local_storage.dart';
 import '../core/theme/app_theme.dart';
 
@@ -47,8 +48,12 @@ class SettingsService {
   Future<void> setDefaultPlaybackSpeed(double v) =>
       _storage.setDouble(StorageKeys.defaultPlaybackSpeed, v);
 
+  /// 字幕默认字号。Android 手机/平板屏幕较小且观看距离近，42 既清晰又不
+  /// 占据过多画面；桌面端观看距离远、画面宽，保持 48。TV 走 ExoPlayer
+  /// 独立渲染路径，此值主要影响 media_kit 的 SubtitleView。
   double get subtitleFontSize =>
-      _storage.getDouble(StorageKeys.subtitleFontSize) ?? 48.0;
+      _storage.getDouble(StorageKeys.subtitleFontSize) ??
+      (isAndroidMobileUi ? 42.0 : 48.0);
 
   Future<void> setSubtitleFontSize(double v) =>
       _storage.setDouble(StorageKeys.subtitleFontSize, v);

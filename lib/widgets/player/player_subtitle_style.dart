@@ -9,9 +9,16 @@ abstract final class PlayerSubtitleStyle {
   ///   different languages / system fonts.
   /// - Adds a 2-pixel black outline via multiple directional [Shadow]s
   ///   so text remains readable on bright scenes.
+  ///
+  /// [bottomPadding] defaults to 76 (desktop, clears bottom controls). Pass a
+  /// smaller value (e.g. 24) on phone to avoid floating too high. `textScaler`
+  /// is intentionally `null` — let `SubtitleView` compute it from viewport area
+  /// (sqrt(nr / 1920*1080), clamped to 1.0); hardcoding 1.15 over-magnified
+  /// subtitles on phone screens where nr ≈ dr already.
   static SubtitleViewConfiguration configuration({
     double fontSize = 48,
     bool visible = true,
+    double bottomPadding = 76,
   }) {
     const outlineColor = Colors.black;
     const stroke = 2.0;
@@ -43,8 +50,7 @@ abstract final class PlayerSubtitleStyle {
         ],
       ),
       textAlign: TextAlign.center,
-      textScaler: const TextScaler.linear(1.15),
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 76),
+      padding: EdgeInsets.fromLTRB(24, 0, 24, bottomPadding),
     );
   }
 }

@@ -80,6 +80,13 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   bool _autoSubtitleActive = false;
   Map<int, SubtitleTrack>? _embyIndexTracks;
   StreamSubscription<Tracks>? _tracksSub;
+  // Cached at initState so `_pickEmbySubtitle` can read providers AFTER the
+  // State is disposed by chrome auto-hide (which swaps PlayerControls for
+  // SizedBox.shrink 4s after the user opens the subtitle picker sheet).
+  // Using ref.read on a disposed ConsumerState throws "Bad state: Using ref
+  // when a widget is about to or has been unmounted is unsafe", which silently
+  // aborted the subtitle switch — root cause of "must switch twice" bug.
+  ProviderContainer? _containerCache;
 
   bool _volumeSliderVisible = false;
   Timer? _volumeHideTimer;
@@ -277,6 +284,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   @override
   void initState() {
     super.initState();
+    _containerCache = ProviderScope.containerOf(context);
     _playerStateStream = _createPlayerStateStream(widget.player);
     SubtitleSwitchQueue.busy.addListener(_onSubtitleBusyChanged);
     widget.volumeShowToken?.addListener(_onVolumeShowToken);
@@ -692,29 +700,50 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     final prevAuto = _autoSubtitleActive;
     final prevEmbyId = _activeEmbySubtitleId;
 
-    setState(() {
-      _pendingEmbySubtitleId = option.selectionId;
-      _autoSubtitleActive = false;
-    });
+    // Capture dependencies BEFORE setState — the subtitle picker is a modal
+    // bottom sheet; while it's open, chrome auto-hide (_chromeHideDelay=4s)
+    // can fire and swap PlayerControls for SizedBox.shrink, disposing this
+    // State. If the user picks an Emby subtitle after that 4s window,
+    // setState would throw "Null check operator used on a null value" on
+    // _element!, and the async switch below would bail on !mounted — leaving
+    // the old text subtitle active (the reported "PGS switch fails" bug).
+    // Capturing here lets the switch proceed even if we unmount mid-flight.
+    final player = _player;
+    // Use cached ProviderContainer instead of ref — ref.read throws once the
+    // State is disposed (chrome auto-hide), aborting the subtitle switch.
+    final container = _containerCache;
+    final emby = container != null
+        ? container.read(embyServiceProvider)
+        : ref.read(embyServiceProvider);
+    final embySubtitles = widget.embySubtitles;
+    final indexTracks = _embyIndexTracks;
+
+    if (mounted) {
+      setState(() {
+        _pendingEmbySubtitleId = option.selectionId;
+        _autoSubtitleActive = false;
+      });
+    }
 
     unawaited(
       SubtitleSwitchQueue.runSerial((gen) async {
-        if (!mounted) return;
-
-        final emby = ref.read(embyServiceProvider);
-        final native = _embyIndexTracks?[option.index] ??
+        // Do NOT bail on !mounted here — the subtitle switch must complete
+        // even if PlayerControls was disposed by chrome auto-hide while the
+        // picker sheet was open. UI refresh is guarded below.
+        final native = indexTracks?[option.index] ??
             fallbackEmbyIndexTrackMap(
-              _player.state.tracks,
-              widget.embySubtitles,
+              player.state.tracks,
+              embySubtitles,
             )[option.index];
         final ok = await applyEmbySubtitle(
-          player: _player,
+          player: player,
           option: option,
           emby: emby,
           generation: gen,
           resolvedMuxed: native,
         );
-        if (!mounted || !SubtitleSwitchQueue.isCurrent(gen)) return;
+        if (!SubtitleSwitchQueue.isCurrent(gen)) return;
+        if (!mounted) return;
 
         setState(() {
           _pendingEmbySubtitleId = null;

@@ -82,8 +82,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Timer? _chromeIdleTimer;
   StreamSubscription<dynamic>? _playerErrorSub;
   StreamSubscription<dynamic>? _completedSub;
-  StreamSubscription<Track>? _diagTrackSub;
-  StreamSubscription<Tracks>? _diagTracksSub;
   VoidCallback? _cancelAndroidResumeGuard;
 
   /// Prevents _bootstrap from running more than once per State.
@@ -256,17 +254,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final playerSvc = ref.read(playerServiceProvider);
     playerSvc.disposePlayer();
     _player = playerSvc.player;
-    _diagTrackSub = _player.stream.track.listen((t) {
-      AppLog.instance.d(
-        'SubtitleDiag',
-        'stream.track.subtitle id=${t.subtitle.id} title=${t.subtitle.title}',
-      );
-    });
-    _diagTracksSub = _player.stream.tracks.listen((tracks) {
-      final n =
-          tracks.subtitle.where((s) => s.id != 'auto' && s.id != 'no').length;
-      AppLog.instance.d('SubtitleDiag', 'stream.tracks subtitle_count=$n');
-    });
     _bindPlayerErrorListener();
     unawaited(_bootstrap());
     if (isAndroidMobileUi) {
@@ -2464,10 +2451,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _cancelAndroidResumeGuard?.call();
     _cancelAndroidResumeGuard = null;
     _playerErrorSub?.cancel();
-    _diagTrackSub?.cancel();
-    _diagTrackSub = null;
-    _diagTracksSub?.cancel();
-    _diagTracksSub = null;
     _progressTimer?.cancel();
     _chromeIdleTimer?.cancel();
     _completedSub?.cancel();
@@ -3024,20 +3007,55 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                         'android-video-${widget.itemId}',
                                       )
                                     : null;
-                                return Video(
-                                  key: viewportKey,
-                                  controller: _controller!,
-                                  width: width,
-                                  height: height,
-                                  fit: fit,
-                                  controls: NoVideoControls,
-                                  subtitleViewConfiguration:
-                                      PlayerSubtitleStyle.configuration(
-                                    fontSize: ref
-                                        .watch(settingsServiceProvider)
-                                        .subtitleFontSize,
-                                    visible: overlay,
-                                  ),
+                                // media_kit_video's `Video` gates its built-in
+                                // `SubtitleView` on `!libass` (video_texture.dart).
+                                // We keep `libass: true` for PGS bitmap compositing
+                                // (media-kit #1371), so the built-in overlay never
+                                // mounts. Mount `SubtitleView` ourselves here,
+                                // controlled by `overlay`, so muxed-text subs
+                                // (sub-ass=no + sub-text) actually render.
+                                //
+                                // Phone uses smaller bottom padding (24 vs 76)
+                                // — desktop's 76 floats subs too high on a small
+                                // landscape viewport.
+                                final subBottom =
+                                    isAndroidMobileUi ? 24.0 : 76.0;
+                                final subFontSize = ref
+                                    .watch(settingsServiceProvider)
+                                    .subtitleFontSize;
+                                return Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    Video(
+                                      key: viewportKey,
+                                      controller: _controller!,
+                                      width: width,
+                                      height: height,
+                                      fit: fit,
+                                      controls: NoVideoControls,
+                                      subtitleViewConfiguration:
+                                          PlayerSubtitleStyle.configuration(
+                                        fontSize: subFontSize,
+                                        visible: false,
+                                        bottomPadding: subBottom,
+                                      ),
+                                    ),
+                                    if (overlay)
+                                      Positioned.fill(
+                                        child: IgnorePointer(
+                                          child: SubtitleView(
+                                            controller: _controller!,
+                                            configuration:
+                                                PlayerSubtitleStyle
+                                                    .configuration(
+                                              fontSize: subFontSize,
+                                              visible: true,
+                                              bottomPadding: subBottom,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
                                 );
                               },
                             );

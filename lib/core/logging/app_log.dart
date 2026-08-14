@@ -257,6 +257,40 @@ class AppLog {
     }
   }
 
+  /// Clears ALL log files from disk and resets the write sink.
+  ///
+  /// Useful for diagnostic workflows: clear → reproduce → export, so the
+  /// exported bundle only contains entries from the latest repro session
+  /// (no stale entries from earlier attempts to wade through).
+  Future<void> clearAll() async {
+    if (kIsWeb) return;
+    final dir = _logDir;
+    if (dir == null) return;
+    try {
+      // Flush + close current sink so the OS releases the file handle
+      // before we delete the underlying file.
+      await _sink?.flush();
+      await _sink?.close();
+    } catch (_) {}
+    _sink = null;
+    try {
+      final entities = dir.listSync();
+      for (final entity in entities) {
+        if (entity is File) {
+          try {
+            await entity.delete();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    // Re-open sink for the current day so subsequent writes succeed.
+    await _rotateIfNeeded();
+    _writeRaw(
+      '===== LOGS CLEARED ${DateTime.now().toIso8601String()} =====',
+    );
+    i('AppLog', 'All log files cleared by user request');
+  }
+
   void d(String tag, String message, [Object? detail]) =>
       _write('DEBUG', tag, message, detail);
 

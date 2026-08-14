@@ -276,9 +276,9 @@ class _TvSubtitleFontSizeTileState extends State<_TvSubtitleFontSizeTile> {
       icon: Icons.closed_caption_outlined,
       label: '字幕字号',
       value: _fontSize,
-      min: 24,
+      min: 12,
       max: 72,
-      divisions: 24,
+      divisions: 30,
       valueLabel: '${_fontSize.toStringAsFixed(0)} px',
       onChanged: (v) => setState(() => _fontSize = v),
       onChangeEnd: (v) async {
@@ -507,9 +507,9 @@ class _SubtitleFontSizeTileState extends State<_SubtitleFontSizeTile> {
           const SizedBox(height: AppSpacing.sm),
           Slider(
             value: _fontSize,
-            min: 24,
+            min: 12,
             max: 72,
-            divisions: 24,
+            divisions: 30,
             label: _fontSize.toStringAsFixed(0),
             onChanged: (v) {
               setState(() => _fontSize = v);

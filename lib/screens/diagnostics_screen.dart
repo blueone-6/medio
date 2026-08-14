@@ -147,6 +147,45 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
+  Future<void> _clearLogs() async {
+    if (kIsWeb) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清除全部日志'),
+        content: const Text(
+          '将删除磁盘上所有日志文件。此操作不可撤销。\n\n'
+          '建议流程：清除日志 → 复现问题 → 分享日志，'
+          '这样导出的日志只包含本次复现的内容。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await AppLog.instance.clearAll();
+      if (!mounted) return;
+      _bumpRefresh();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('日志已清除')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('清除失败：$e')),
+      );
+    }
+  }
+
   Future<void> _openLogDirectory() async {
     final path = AppLog.instance.logDirectoryPath;
     if (path == null) return;
@@ -230,6 +269,12 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                   icon: Icons.share_outlined,
                   label: '分享日志',
                   onTap: _shareLogs,
+                ),
+              if (!kIsWeb)
+                _ActionButton(
+                  icon: Icons.cleaning_services_outlined,
+                  label: '清除日志',
+                  onTap: _clearLogs,
                 ),
               if (canOpenLogDir && logPath != null)
                 _ActionButton(
