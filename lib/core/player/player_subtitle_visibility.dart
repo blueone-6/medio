@@ -216,12 +216,18 @@ extension PlayerSubtitleVisibility on Player {
 
     if (removed > 0) {
       _mpvHadExternalSubtitleExpando[this] = false;
-      try {
-        await platform.setProperty('sid', 'no', waitForInitialization: false);
-      } catch (_) {}
-      invalidateMpvSidIndexCache(this);
-      await Future<void>.delayed(const Duration(milliseconds: 32));
     }
+
+    // Always deselect the currently-active muxed `sid`. Otherwise switching
+    // from an embedded (muxed) subtitle to an external `sub-add` would leave
+    // the embedded track selected and render both at the same time (multiple
+    // subtitle lines on screen). Writing `sid=no` also drives media_kit's
+    // track state, unmounting the Flutter text overlay if one is mounted.
+    try {
+      await platform.setProperty('sid', 'no', waitForInitialization: false);
+    } catch (_) {}
+    invalidateMpvSidIndexCache(this);
+    await Future<void>.delayed(const Duration(milliseconds: 32));
   }
 
   /// Muxed text via `sub-ass=no` + Flutter overlay (`sub-text`); avoids libass VO stall on `sid`.
