@@ -53,7 +53,11 @@ extension PlayerSubtitleVisibility on Player {
       case SubtitleRenderMode.flutterOverlay:
         await set('sub-ass', 'no');
         await set('blend-subtitles', 'no');
-        await set('sub-visibility', 'yes');
+        // Native mpv rendering off — the Flutter [SubtitleView] overlay (fed
+        // from mpv `sub-text`, which stays populated regardless of
+        // sub-visibility) is the only renderer. Keeping sub-visibility=yes
+        // would draw the SRT twice (mpv + overlay).
+        await set('sub-visibility', 'no');
         await set('secondary-sub-visibility', 'no');
         await set('sub-auto', 'no');
       case SubtitleRenderMode.mpvLibass:
@@ -67,6 +71,13 @@ extension PlayerSubtitleVisibility on Player {
         await set('sub-visibility', 'no');
         await set('secondary-sub-visibility', 'no');
     }
+
+    // Toggling `sub-ass` / `blend-subtitles` makes mpv reinitialize the sub
+    // renderer / video output asynchronously. A `sid` written right after can
+    // be clobbered by that reconfig (e.g. the first PGS switch from a muxed
+    // text overlay would silently fail and need a second try). Let it settle
+    // before the caller selects the track.
+    await Future<void>.delayed(const Duration(milliseconds: 80));
   }
 
   Future<void> _mpvSetSid(String sid) async {
@@ -238,9 +249,14 @@ extension PlayerSubtitleVisibility on Player {
     }
 
     try {
-      await platform.setSubtitleTrack(track, synchronized: false);
-
+      // Refresh the demuxer/render state at the current position FIRST, then
+      // select the track. Writing `time-pos` after `set sid` transiently
+      // clobbers the freshly selected sid on a strm-over-CDN MKV (the seek
+      // re-reads demuxer state), so the first cross-mode text switch needed a
+      // retry to stick. Seek-then-set makes it take on the first attempt.
       await _restorePositionAfterSubtitleSwitch(posBeforeSid);
+
+      await platform.setSubtitleTrack(track, synchronized: false);
 
       AppLog.instance.d('Subtitle', 'muxed text overlay sid=${track.id} ($reason)');
       return true;
@@ -283,7 +299,17 @@ extension PlayerSubtitleVisibility on Player {
 
     if (!verifySid) return true;
 
-    final sid = await platform.getProperty('sid', waitForInitialization: false);
+    var sid = await platform.getProperty('sid', waitForInitialization: false);
+    if (sid != track.id) {
+      // The render-mode reconfig (or the time-pos restore) can transiently
+      // reset sid. Retry briefly so the first PGS switch sticks instead of
+      // requiring a second manual switch.
+      for (var attempt = 0; attempt < 3 && sid != track.id; attempt++) {
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        await _mpvSetSid(track.id);
+        sid = await platform.getProperty('sid', waitForInitialization: false);
+      }
+    }
     final ok = sid == track.id;
     if (!ok) {
       AppLog.instance.w(

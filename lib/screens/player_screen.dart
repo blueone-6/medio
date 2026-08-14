@@ -117,6 +117,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// triggered by mpv spurious "completed" events during seeks.
   DateTime _lastSeekAt = DateTime.now();
 
+  /// Deadline until which a near-end "completion" is treated as the spurious
+  /// EOF that follows a subtitle switch on a strm-over-CDN MKV, while the
+  /// verified recovery is still running. Null when playback is healthy.
+  DateTime? _subtitleEofRecoveryUntil;
+
+  /// Monotonic token: bumped every time a subtitle-switch EOF recovery starts,
+  /// so a stale in-flight recovery loop never clears a newer one's window.
+  int _subtitleEofRecoveryToken = 0;
+
+  /// Most recent plausible mid-file position and when it was observed.
+  ///
+  /// Used by [_onPlaybackCompleted] to tell a spurious "position ≈ duration"
+  /// EOF (CDN byte-range failure during resume/open) from a genuine end-of-
+  /// media completion — a genuine end plays through the whole distance, a
+  /// spurious one jumps to the end almost instantly.
+  Duration? _lastConfirmedPosition;
+  DateTime? _lastConfirmedPositionAt;
+
   /// Prevents exiting fullscreen in dispose() when switching episodes.
   bool _episodeSwitching = false;
 
@@ -294,10 +312,37 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // strm playback with a cold CDN cache - reporting it would mark the
       // episode as watched at 100% even though nothing actually played.
       if (_isFreshPlaybackPositionBogus(pos)) return null;
-      return (pos.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
+      // A spurious "position ≈ duration" EOF (CDN byte-range failure) would
+      // otherwise be reported as 100% watched on exit / progress. Fall back to
+      // the last confirmed mid-file position.
+      final recoverTo = _implausibleEndJumpTarget(pos, _player.state.duration);
+      final effective = recoverTo ?? pos;
+      return (effective.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
     } catch (_) {
       return null;
     }
+  }
+
+  /// If [pos] is an implausible jump to ≈duration — i.e. the last confirmed
+  /// mid-file position was not near the end, yet [pos] is at/near the end far
+  /// faster than real (≈1x) playback could have covered that content distance —
+  /// returns that confirmed position as the recovery target. Returns null when
+  /// the position is a plausible result of actual playback.
+  ///
+  /// Real playback covers ~1x, so wall-time ≈ content-time; a spurious EOF
+  /// (CDN byte-range failure during resume/open) has wall-time << content-time.
+  /// Requiring a >10s content gap keeps the genuine end-of-movie case (last
+  /// confirmed position within seconds of the end) from being misread.
+  Duration? _implausibleEndJumpTarget(Duration pos, Duration dur) {
+    final confirmedPos = _lastConfirmedPosition;
+    final confirmedAt = _lastConfirmedPositionAt;
+    if (confirmedPos == null || confirmedAt == null) return null;
+    if (isPlaybackNearEnd(confirmedPos, dur)) return null;
+    final contentGap = pos - confirmedPos;
+    if (contentGap <= const Duration(seconds: 10)) return null;
+    final wallGap = DateTime.now().difference(confirmedAt);
+    if (wallGap >= contentGap - const Duration(seconds: 3)) return null;
+    return confirmedPos;
   }
 
   /// Detects the bogus "position ≈ duration" state on fresh **and** resume
@@ -414,6 +459,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     );
     _positionGuardSub = _player.stream.position.listen((pos) {
       if (!mounted) return;
+      // Track the latest plausible mid-file position (skipping near-end /
+      // bogus EOF values) so a later spurious EOF can be distinguished from a
+      // genuine completion by _onPlaybackCompleted.
+      if (pos > const Duration(seconds: 5) &&
+          !isPlaybackNearEnd(pos, _player.state.duration)) {
+        _lastConfirmedPosition = pos;
+        _lastConfirmedPositionAt = DateTime.now();
+      }
       if (_bogusPositionCorrected) return;
       if (!_isFreshPlaybackPositionBogus(pos)) return;
       _bogusPositionCorrected = true;
@@ -608,6 +661,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _legitimatePositionSeen = false;
     _resumeTargetForGuard = null;
     _networkRecoveryAttempts = 0;
+    // Invalidate any in-flight subtitle-switch EOF recovery (re-bootstrap is
+    // the escalation path for it, so its retries must stop).
+    _subtitleEofRecoveryToken++;
+    _subtitleEofRecoveryUntil = null;
+    // Drop the previous session's confirmed position so a fresh playback's
+    // early positions aren't compared against it.
+    _lastConfirmedPosition = null;
+    _lastConfirmedPositionAt = null;
     // Reset "Failed to open" auto-retry counter so the new bootstrap can use
     // its full retry budget if the go-emby2openlist plugin is still resolving.
     _openRetryAttempts = 0;
@@ -2358,7 +2419,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _recoverFromSubtitleSwitchEof() {
     final switchAt = SubtitleSwitchQueue.lastSwitchStartedAt;
     if (switchAt == null) return false;
-    if (DateTime.now().difference(switchAt).inSeconds > 3) return false;
+    // Widen the window beyond the original 3 s: the spurious EOF can fire a
+    // few seconds after the switch, and its recovery seek can take several
+    // seconds to fail and re-surface as another "completed" event. 10 s keeps
+    // genuine near-end switches safe via the isPlaybackNearEnd(before) guard.
+    if (DateTime.now().difference(switchAt).inSeconds > 10) return false;
     final before = SubtitleSwitchQueue.positionBeforeSwitch;
     if (before == null || before <= Duration.zero) return false;
     final dur = _player.state.duration;
@@ -2366,26 +2431,85 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // end-of-media completion near the switch is still a real completion.
     if (isPlaybackNearEnd(before, dur)) return false;
 
+    // Keep suppressing near-end "completed" events until the verified recovery
+    // has actually escaped the EOF state (or exhausted its retries). Without
+    // this, the recovery seek's own re-EOF (CDN byte-range fail) is reported
+    // as a genuine completion a few seconds later.
+    _subtitleEofRecoveryToken++;
+    _subtitleEofRecoveryUntil =
+        DateTime.now().add(const Duration(seconds: 12));
+
     AppLog.instance.w(
       'Player',
-      'spurious EOF right after subtitle switch — re-seeking to '
-          '${before.inSeconds}s to recover (dur=${dur.inSeconds}s)',
+      'spurious EOF right after subtitle switch — recovering to '
+          '${before.inSeconds}s (dur=${dur.inSeconds}s)',
     );
     _lastSeekAt = DateTime.now();
-    // Seek first: media_kit's seek() resets state.completed (→ false), so the
-    // play() below won't hit its "completed → seek(0)" playlist-restart branch.
-    unawaited(
-      _player.seek(before).then((_) => _player.play()).catchError((Object e, StackTrace st) {
+    unawaited(_runSubtitleSwitchEofRecovery(before, _subtitleEofRecoveryToken));
+    _rearmStallDetectorAfterSeek();
+    return true;
+  }
+
+  /// Verified + retried recovery for the post-subtitle-switch spurious EOF.
+  ///
+  /// A single seek is not reliable on a strm-over-CDN MKV: the sid change
+  /// broke the demuxer's byte-range state, so the first seek can fail and mpv
+  /// stays at EOF. Try a couple of quick seeks; if it never escapes, escalate
+  /// to the stall recovery (full re-bootstrap, re-resolves the CDN URL) and
+  /// resume at the actual pre-switch position — not the original resume hint.
+  Future<void> _runSubtitleSwitchEofRecovery(
+    Duration before,
+    int token,
+  ) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        // Seek first: media_kit's seek() resets state.completed (→ false), so
+        // the play() below won't hit its "completed → seek(0)" branch.
+        await _player.seek(before);
+        await _player.play();
+      } catch (e, st) {
         AppLog.instance.e(
           'Player',
-          'subtitle-switch EOF recovery failed (seek/play)',
+          'subtitle-switch EOF recovery seek failed (attempt=$attempt)',
           error: e,
           stackTrace: st,
         );
-      }),
+      }
+      // Give mpv time to actually leave the EOF state (a CDN byte-range
+      // request may be in flight) before deciding whether the recovery worked.
+      await Future<void>.delayed(const Duration(milliseconds: 1000));
+      if (!mounted || _leavingPlayer || token != _subtitleEofRecoveryToken) {
+        return;
+      }
+      final pos = _player.state.position;
+      if (!isPlaybackNearEnd(pos, _player.state.duration)) {
+        AppLog.instance.w(
+          'Player',
+          'subtitle-switch EOF recovery verified: pos=${pos.inSeconds}s',
+        );
+        _subtitleEofRecoveryUntil = null;
+        return;
+      }
+      AppLog.instance.w(
+        'Player',
+        'subtitle-switch EOF recovery attempt=$attempt still at '
+            'pos=${pos.inSeconds}s — retrying',
+      );
+    }
+
+    AppLog.instance.w(
+      'Player',
+      'subtitle-switch EOF recovery exhausted — re-bootstrapping to escape EOF '
+          '(resuming at ${before.inSeconds}s)',
     );
-    _rearmStallDetectorAfterSeek();
-    return true;
+    _subtitleEofRecoveryUntil = null;
+    if (mounted && !_leavingPlayer) {
+      // Resume at the actual pre-switch position, not the original resume
+      // hint — otherwise the re-bootstrap jumps back to where the session
+      // started, which feels like the playback rewound.
+      _resumeTicksOverride = (before.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
+      unawaited(_handlePlaybackStall());
+    }
   }
 
   /// Auto-play next episode when current playback reaches the end.
@@ -2403,12 +2527,51 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (_isFreshPlaybackPositionBogus(pos)) return;
     if (!isPlaybackNearEnd(pos, dur)) return;
 
+    // A genuine end-of-media completion means the position actually played
+    // through to the end. If mpv jumped from a confirmed mid-file position to
+    // ≈duration far faster than real (≈1x) playback could cover that distance,
+    // this is a spurious EOF from a CDN byte-range failure (e.g. right after a
+    // resume-open when the saved-subtitle apply also failed) — recover by
+    // re-seeking to the last confirmed position instead of reporting the item
+    // as watched at 100%.
+    final recoverTo = _implausibleEndJumpTarget(pos, dur);
+    if (recoverTo != null) {
+      AppLog.instance.w(
+        'Player',
+        'implausible jump to end: confirmed=${recoverTo.inSeconds}s '
+            'now=${pos.inSeconds}s — recovering',
+      );
+      _subtitleEofRecoveryToken++;
+      _subtitleEofRecoveryUntil =
+          DateTime.now().add(const Duration(seconds: 12));
+      _lastSeekAt = DateTime.now();
+      unawaited(
+        _runSubtitleSwitchEofRecovery(recoverTo, _subtitleEofRecoveryToken),
+      );
+      _rearmStallDetectorAfterSeek();
+      return;
+    }
+
     // A subtitle switch on a strm-over-CDN MKV can spuriously trip mpv into
     // `eof-reached` (the `sid` change + `time-pos` re-seek does a demuxer
     // byte-range request that fails on a cold CDN cache). Playback is still
     // genuinely mid-file, so re-seek back to the pre-switch position and
     // resume instead of treating this as a real completion (which would report
     // the item as watched and leave playback dead at the end of the file).
+    //
+    // While the verified recovery is still running (the recovery seek can take
+    // a few seconds and re-trip EOF on the same CDN), a re-emitted "completed"
+    // event must not be treated as genuine — otherwise the switch would still
+    // report the item as completed.
+    if (_subtitleEofRecoveryUntil != null &&
+        DateTime.now().isBefore(_subtitleEofRecoveryUntil!)) {
+      AppLog.instance.w(
+        'Player',
+        'suppressing completion during subtitle-switch EOF recovery',
+      );
+      return;
+    }
+
     if (_recoverFromSubtitleSwitchEof()) return;
 
     final item = _currentItem;
@@ -2523,6 +2686,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
     _nextEpCountdownTimer?.cancel();
     _arrowSeekDelayTimer?.cancel();
+    _subtitleEofRecoveryToken++;
+    _subtitleEofRecoveryUntil = null;
     if (!_leavingPlayer && !_episodeSwitching) {
       unawaited(_reportStoppedIfNeeded());
     }
