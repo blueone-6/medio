@@ -591,6 +591,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     unawaited(
       SubtitleSwitchQueue.runSerial((gen) async {
         if (!mounted) return;
+        SubtitleSwitchQueue.recordSwitchStart(_player.state.position);
         setState(() {
           _pendingEmbySubtitleId = null;
           if (t.id == 'auto') {

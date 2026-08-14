@@ -39,6 +39,11 @@ Future<bool> applyEmbySubtitle({
         'format=${option.format} label=${option.label}',
   );
 
+  // Record the switch start so the player screen can tell apart a spurious
+  // mpv EOF (strm-over-CDN MKV `sid` switch → demuxer byte-range fail) from a
+  // genuine end-of-media completion, and recover by re-seeking here.
+  SubtitleSwitchQueue.recordSwitchStart(player.state.position);
+
   if (!SubtitleSwitchQueue.isCurrent(generation)) {
     throw SubtitleSwitchCancelled();
   }

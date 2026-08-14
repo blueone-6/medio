@@ -16,6 +16,30 @@ abstract final class SubtitleSwitchQueue {
   /// True while a subtitle switch (including network fetch) is in progress.
   static final ValueNotifier<bool> busy = ValueNotifier<bool>(false);
 
+  /// When the latest subtitle switch started. Used by the player screen to
+  /// distinguish a spurious mpv EOF (triggered by the `sid` change + `time-pos`
+  /// re-seek on a strm-over-CDN MKV) from a genuine end-of-media completion.
+  static DateTime? lastSwitchStartedAt;
+
+  /// Player position captured right before the latest subtitle switch's mpv
+  /// mutation. Recovery target when a spurious EOF follows the switch.
+  static Duration? positionBeforeSwitch;
+
+  /// Records the switch start, including the player position at that moment.
+  /// [playerPosition] may be null when the position isn't available yet.
+  static void recordSwitchStart(Duration? playerPosition) {
+    lastSwitchStartedAt = DateTime.now();
+    if (playerPosition != null) {
+      positionBeforeSwitch = playerPosition;
+    }
+  }
+
+  /// Clears switch-tracking state (call before player disposal).
+  static void clearSwitchTracking() {
+    lastSwitchStartedAt = null;
+    positionBeforeSwitch = null;
+  }
+
   static int begin() => ++_generation;
 
   static bool isCurrent(int generation) => generation == _generation;
@@ -51,6 +75,7 @@ abstract final class SubtitleSwitchQueue {
     _generation++;
     _mpvChain = Future<void>.value();
     busy.value = false;
+    clearSwitchTracking();
   }
   static Future<T> withMpv<T>(Future<T> Function() action) async {
     final completer = Completer<T>();

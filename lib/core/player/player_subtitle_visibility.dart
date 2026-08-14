@@ -75,6 +75,52 @@ extension PlayerSubtitleVisibility on Player {
     await platform.command(['set', 'sid', sid], waitForInitialization: false);
   }
 
+  /// Re-seeks to [posBeforeSid] after a muxed subtitle switch — but only when
+  /// the captured position is a plausible mid-file value.
+  ///
+  /// On strm-over-CDN MKV, mpv's demuxer can momentarily report the bogus
+  /// "position ≈ duration" (SeekHead byte-range fail on a cold cache). Writing
+  /// that back as `time-pos` turns the subtitle switch into a seek-to-EOF,
+  /// which stops playback and is unrecoverable. Guarding the write keeps the
+  /// switch from ever becoming an EOF seek.
+  Future<void> _restorePositionAfterSubtitleSwitch(String? posBeforeSid) async {
+    if (posBeforeSid == null || posBeforeSid.isEmpty || posBeforeSid == '0') {
+      return;
+    }
+    final platform = _native;
+    if (platform == null) return;
+
+    final double value;
+    try {
+      value = double.parse(posBeforeSid);
+    } catch (_) {
+      return;
+    }
+    if (value <= 0) return;
+
+    final durMs = state.duration.inMilliseconds;
+    final valueMs = (value * 1000).round();
+    // With a known duration, skip near-end positions — that is the MKV
+    // SeekHead artifact, not where playback actually is.
+    if (durMs > 30000 &&
+        (valueMs >= durMs - 15000 || valueMs >= durMs * 0.98)) {
+      AppLog.instance.w(
+        'Subtitle',
+        'skip time-pos restore: captured pos=${valueMs}ms looks like the '
+            'bogus EOF position (dur=${durMs}ms) — not re-seeking',
+      );
+      return;
+    }
+
+    try {
+      await platform.setProperty(
+        'time-pos',
+        (value + 0.001).toStringAsFixed(6),
+        waitForInitialization: false,
+      );
+    } catch (_) {}
+  }
+
   Future<void> _mpvSubAdd(String uri, SubtitleTrack track) async {
     final platform = _native;
     if (platform == null) return;
@@ -194,15 +240,7 @@ extension PlayerSubtitleVisibility on Player {
     try {
       await platform.setSubtitleTrack(track, synchronized: false);
 
-      if (posBeforeSid != null && posBeforeSid.isNotEmpty && posBeforeSid != '0') {
-        try {
-          await platform.setProperty(
-            'time-pos',
-            (double.parse(posBeforeSid) + 0.001).toStringAsFixed(6),
-            waitForInitialization: false,
-          );
-        } catch (_) {}
-      }
+      await _restorePositionAfterSubtitleSwitch(posBeforeSid);
 
       AppLog.instance.d('Subtitle', 'muxed text overlay sid=${track.id} ($reason)');
       return true;
@@ -241,15 +279,7 @@ extension PlayerSubtitleVisibility on Player {
 
     await _mpvSetSid(track.id);
 
-    if (posBeforeSid != null && posBeforeSid.isNotEmpty && posBeforeSid != '0') {
-      try {
-        await platform.setProperty(
-          'time-pos',
-          (double.parse(posBeforeSid) + 0.001).toStringAsFixed(6),
-          waitForInitialization: false,
-        );
-      } catch (_) {}
-    }
+    await _restorePositionAfterSubtitleSwitch(posBeforeSid);
 
     if (!verifySid) return true;
 

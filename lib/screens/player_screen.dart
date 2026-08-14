@@ -2352,6 +2352,42 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _onSelectEpisode(target.id);
   }
 
+  /// Recovers from a spurious mpv EOF that follows a subtitle switch on a
+  /// strm-over-CDN MKV. Returns true when this was handled (playback resumed);
+  /// false when the completion should be treated as genuine.
+  bool _recoverFromSubtitleSwitchEof() {
+    final switchAt = SubtitleSwitchQueue.lastSwitchStartedAt;
+    if (switchAt == null) return false;
+    if (DateTime.now().difference(switchAt).inSeconds > 3) return false;
+    final before = SubtitleSwitchQueue.positionBeforeSwitch;
+    if (before == null || before <= Duration.zero) return false;
+    final dur = _player.state.duration;
+    // Only recover when we were genuinely mid-file before the switch — a real
+    // end-of-media completion near the switch is still a real completion.
+    if (isPlaybackNearEnd(before, dur)) return false;
+
+    AppLog.instance.w(
+      'Player',
+      'spurious EOF right after subtitle switch — re-seeking to '
+          '${before.inSeconds}s to recover (dur=${dur.inSeconds}s)',
+    );
+    _lastSeekAt = DateTime.now();
+    // Seek first: media_kit's seek() resets state.completed (→ false), so the
+    // play() below won't hit its "completed → seek(0)" playlist-restart branch.
+    unawaited(
+      _player.seek(before).then((_) => _player.play()).catchError((Object e, StackTrace st) {
+        AppLog.instance.e(
+          'Player',
+          'subtitle-switch EOF recovery failed (seek/play)',
+          error: e,
+          stackTrace: st,
+        );
+      }),
+    );
+    _rearmStallDetectorAfterSeek();
+    return true;
+  }
+
   /// Auto-play next episode when current playback reaches the end.
   Future<void> _onPlaybackCompleted() async {
     if (!_bootstrapped || _loading) return;
@@ -2366,6 +2402,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // auto-play-next a few seconds into a fresh episode.
     if (_isFreshPlaybackPositionBogus(pos)) return;
     if (!isPlaybackNearEnd(pos, dur)) return;
+
+    // A subtitle switch on a strm-over-CDN MKV can spuriously trip mpv into
+    // `eof-reached` (the `sid` change + `time-pos` re-seek does a demuxer
+    // byte-range request that fails on a cold CDN cache). Playback is still
+    // genuinely mid-file, so re-seek back to the pre-switch position and
+    // resume instead of treating this as a real completion (which would report
+    // the item as watched and leave playback dead at the end of the file).
+    if (_recoverFromSubtitleSwitchEof()) return;
 
     final item = _currentItem;
     if (item == null) return;
