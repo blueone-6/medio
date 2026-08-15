@@ -10,12 +10,14 @@ class TvErrorPanel extends StatelessWidget {
     super.key,
     required this.error,
     this.onRetry,
+    this.onOpenSettings,
     this.compact = false,
     this.autofocusRetry = true,
   });
 
   final Object? error;
   final VoidCallback? onRetry;
+  final VoidCallback? onOpenSettings;
   final bool compact;
   final bool autofocusRetry;
 
@@ -47,6 +49,18 @@ class TvErrorPanel extends StatelessWidget {
                 icon: Icons.refresh_rounded,
                 autofocus: autofocusRetry,
                 onActivate: onRetry!,
+              ),
+            ),
+          ],
+          if (onOpenSettings != null) ...[
+            const SizedBox(height: AppSpacing.sm),
+            FocusTraversalOrder(
+              order: const NumericFocusOrder(11),
+              child: TvFocusActionButton(
+                label: '去设置',
+                icon: Icons.settings_rounded,
+                autofocus: onRetry == null,
+                onActivate: onOpenSettings!,
               ),
             ),
           ],

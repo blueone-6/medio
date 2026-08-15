@@ -30,6 +30,9 @@ class ErrorView extends StatefulWidget {
     bool aligned = false,
   }) {
     final info = homeSectionErrorInfo(error, section);
+    // 始终提供「去设置」入口：不仅限于未配置/未授权错误。
+    // 媒体库因网络或服务器问题无法访问时，用户同样需要能进入设置
+    // 检查/修改服务器地址与密钥，否则会被困在错误界面无法自救。
     return ErrorView(
       key: key,
       error: error,
@@ -37,8 +40,8 @@ class ErrorView extends StatefulWidget {
       message: info.message,
       hint: info.hint,
       onRetry: onRetry,
-      secondaryActionLabel: info.suggestsSettings ? '去设置' : null,
-      onSecondaryAction: info.suggestsSettings ? onOpenSettings : null,
+      secondaryActionLabel: onOpenSettings != null ? '去设置' : null,
+      onSecondaryAction: onOpenSettings,
       compact: compact,
       aligned: aligned,
       section: section,

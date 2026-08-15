@@ -24,18 +24,24 @@ class TvHomeShell extends ConsumerStatefulWidget {
     this.librariesLoading = false,
     this.librariesError,
     required this.resume,
+    this.resumeError,
+    this.resumeLoading = false,
     required this.emby,
     required this.onRefresh,
     this.onRetryLibraries,
+    this.onRetryResume,
   });
 
   final List<EmbyLibrary> libraries;
   final bool librariesLoading;
   final Object? librariesError;
   final List<EmbyMediaItem> resume;
+  final Object? resumeError;
+  final bool resumeLoading;
   final EmbyService emby;
   final Future<void> Function() onRefresh;
   final VoidCallback? onRetryLibraries;
+  final VoidCallback? onRetryResume;
 
   @override
   ConsumerState<TvHomeShell> createState() => _TvHomeShellState();
@@ -97,6 +103,9 @@ class _TvHomeShellState extends ConsumerState<TvHomeShell> {
                             child: _TvHomeTabPane(
                               resume: widget.resume,
                               emby: widget.emby,
+                              resumeError: widget.resumeError,
+                              resumeLoading: widget.resumeLoading,
+                              onRetryResume: widget.onRetryResume,
                             ),
                           ),
                           _TvShellKeepAliveTab(
@@ -169,15 +178,35 @@ class _TvHomeTabPane extends StatelessWidget {
   const _TvHomeTabPane({
     required this.resume,
     required this.emby,
+    this.resumeError,
+    this.resumeLoading = false,
+    this.onRetryResume,
   });
 
   final List<EmbyMediaItem> resume;
   final EmbyService emby;
+  final Object? resumeError;
+  final bool resumeLoading;
+  final VoidCallback? onRetryResume;
 
   @override
   Widget build(BuildContext context) {
     final viewportW = TvHomeLayout.viewportWidthOf(context);
     final gap = TvHomeLayout.sectionGapFor(viewportW);
+
+    // resume 加载中且无缓存 -> 首页 tab 内显示加载指示器（侧边栏仍可用）。
+    if (resumeLoading) {
+      return const Center(child: LoadingIndicator(message: '加载首页…'));
+    }
+
+    // resume 加载失败且无缓存 -> 首页 tab 内显示错误面板 + 去设置按钮。
+    if (resumeError != null) {
+      return TvErrorPanel(
+        error: resumeError,
+        onRetry: onRetryResume,
+        onOpenSettings: () => context.push('/settings'),
+      );
+    }
 
     return FocusTraversalGroup(
       policy: OrderedTraversalPolicy(),
@@ -321,6 +350,7 @@ class _TvBrowseTabPaneState extends State<_TvBrowseTabPane> {
         child: TvErrorPanel(
           error: widget.librariesError,
           onRetry: widget.onRetryLibraries,
+          onOpenSettings: () => context.push('/settings/servers'),
         ),
       );
     }
