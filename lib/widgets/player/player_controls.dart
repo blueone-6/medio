@@ -19,6 +19,7 @@ import '../../core/player/subtitle_track_kind.dart';
 import '../../core/player/player_subtitle_delay.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radius.dart';
+import 'player_subtitle_panel.dart';
 
 import '../../models/emby/emby_subtitle_option.dart';
 import '../../providers/settings_provider.dart';
@@ -1557,8 +1558,13 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     );
   }
 
-  void _showSubtitlePicker(Tracks tracks, SubtitleTrack? currentSub) {
+  Future<void> _showSubtitlePicker(
+    Tracks tracks,
+    SubtitleTrack? currentSub,
+  ) async {
     _notify();
+    unawaited(_refreshEmbyTrackMap());
+
     final emby = widget.embySubtitles;
     final nativeMuxed = _nativeMuxedTracks(tracks, emby);
     final embeddedEmby = uniqueEmbeddedEmbySubtitles(emby);
@@ -1567,99 +1573,91 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     final indexTracks = _embyIndexTracks ?? const {};
     final fallbackTracks = fallbackEmbyIndexTrackMap(tracks, emby);
 
-    showModalBottomSheet<void>(
+    await showGeneralDialog<void>(
       context: context,
-      backgroundColor: _popupBg,
-      builder: (ctx) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                title: const Text('关闭字幕', style: TextStyle(color: _foreground)),
-                trailing: currentSub?.id == 'no' &&
-                        !_autoSubtitleActive &&
-                        _activeEmbySubtitleId == null
-                    ? Icon(Icons.check, color: _playerAccent(context))
-                    : null,
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _onSubtitleMenuSelected(SubtitleTrack.no());
-                },
-              ),
-              if (showAuto)
-                ListTile(
-                  title: const Text('自动（内嵌）',
-                      style: TextStyle(color: _foreground)),
-                  trailing: _autoSubtitleActive
-                      ? Icon(Icons.check, color: _playerAccent(context))
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _onSubtitleMenuSelected(SubtitleTrack.auto());
-                  },
+      barrierDismissible: !_subtitleSwitching,
+      barrierLabel: '关闭字幕选择',
+      barrierColor: const Color(0x66000000),
+      transitionDuration: const Duration(milliseconds: 120),
+      pageBuilder: (dialogContext, animation, secondaryAnimation) {
+        void select(Object? value) {
+          if (_subtitleSwitching) return;
+          Navigator.pop(dialogContext);
+          _onSubtitleMenuSelected(value);
+        }
+
+        final baseOptions = <PlayerSubtitleOption>[
+          PlayerSubtitleOption(
+            label: '关闭字幕',
+            selected: currentSub?.id == 'no' &&
+                !_autoSubtitleActive &&
+                _activeEmbySubtitleId == null,
+            onSelected: () => select(SubtitleTrack.no()),
+          ),
+          if (showAuto)
+            PlayerSubtitleOption(
+              label: '自动（内嵌）',
+              selected: _autoSubtitleActive,
+              onSelected: () => select(SubtitleTrack.auto()),
+            ),
+        ];
+        final embeddedOptions = [
+          for (final o in embeddedEmby)
+            () {
+              final native = indexTracks[o.index] ?? fallbackTracks[o.index];
+              return PlayerSubtitleOption(
+                label: embeddedSubtitleMenuLabel(o, native),
+                detail: _embeddedEmbySecondaryLabel(o, native),
+                selected: !_autoSubtitleActive &&
+                    _isEmbySubtitleActive(o, currentSub),
+                onSelected: () => select(o),
+              );
+            }(),
+        ];
+        final nativeOptions = [
+          for (final t in nativeMuxed)
+            PlayerSubtitleOption(
+              label: _subtitleMenuLabel(t),
+              selected: currentSub?.id == t.id &&
+                  _activeEmbySubtitleId == null &&
+                  !_autoSubtitleActive,
+              onSelected: () => select(t),
+            ),
+        ];
+        final externalOptions = [
+          for (final o in externalEmby)
+            PlayerSubtitleOption(
+              label: o.label,
+              selected:
+                  !_autoSubtitleActive && _isEmbySubtitleActive(o, currentSub),
+              onSelected: () => select(o),
+            ),
+        ];
+
+        final embedded =
+            embeddedOptions.isNotEmpty ? embeddedOptions : nativeOptions;
+        return Center(
+          child: PlayerSubtitlePanel(
+            switching: _subtitleSwitching,
+            onClose: Navigator.of(dialogContext).pop,
+            sections: [
+              PlayerSubtitleSection(options: baseOptions),
+              if (embedded.isNotEmpty)
+                PlayerSubtitleSection(
+                  title: '内嵌（${embedded.length}）',
+                  options: embedded,
                 ),
-              for (final o in embeddedEmby)
-                ListTile(
-                  title: Text(
-                    embeddedSubtitleMenuLabel(
-                      o,
-                      indexTracks[o.index] ?? fallbackTracks[o.index],
-                    ),
-                    style: const TextStyle(color: _foreground),
-                  ),
-                  subtitle: () {
-                    final secondary = _embeddedEmbySecondaryLabel(
-                      o,
-                      indexTracks[o.index] ?? fallbackTracks[o.index],
-                    );
-                    if (secondary == null) return null;
-                    return Text(
-                      secondary,
-                      style: const TextStyle(
-                        color: Color(0x99FFFFFF),
-                        fontSize: 12,
-                      ),
-                    );
-                  }(),
-                  trailing: _isEmbySubtitleActive(o, currentSub)
-                      ? Icon(Icons.check, color: _playerAccent(context))
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _onSubtitleMenuSelected(o);
-                  },
-                ),
-              for (final t in nativeMuxed)
-                ListTile(
-                  title: Text(_subtitleMenuLabel(t),
-                      style: const TextStyle(color: _foreground)),
-                  trailing: currentSub?.id == t.id &&
-                          _activeEmbySubtitleId == null &&
-                          !_autoSubtitleActive
-                      ? Icon(Icons.check, color: _playerAccent(context))
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _onSubtitleMenuSelected(t);
-                  },
-                ),
-              for (final o in externalEmby)
-                ListTile(
-                  title:
-                      Text(o.label, style: const TextStyle(color: _foreground)),
-                  trailing: _isEmbySubtitleActive(o, currentSub)
-                      ? Icon(Icons.check, color: _playerAccent(context))
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _onSubtitleMenuSelected(o);
-                  },
+              if (externalOptions.isNotEmpty)
+                PlayerSubtitleSection(
+                  title: '外挂（${externalOptions.length}）',
+                  options: externalOptions,
                 ),
             ],
           ),
-        ),
-      ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) =>
+          FadeTransition(opacity: animation, child: child),
     );
   }
 
