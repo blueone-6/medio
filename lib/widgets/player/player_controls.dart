@@ -537,6 +537,17 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     return base;
   }
 
+  /// Secondary Emby label for an embedded row ? shown only when it differs
+  /// from the real muxed track name (mirrors the desktop popup menu).
+  String? _embeddedEmbySecondaryLabel(
+    EmbySubtitleOption option,
+    SubtitleTrack? native,
+  ) {
+    final nativeName = muxedTrackDisplayName(native);
+    if (nativeName == null || option.label == nativeName) return null;
+    return option.label;
+  }
+
   Future<void> _reapplySubtitleDelay() async {
     final offsetMs = ref.read(settingsServiceProvider).subtitleOffsetMs;
     await _player.setSubtitleDelay(Duration(milliseconds: offsetMs));
@@ -1118,6 +1129,8 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     final embeddedEmby = uniqueEmbeddedEmbySubtitles(emby);
     final externalEmby = externalEmbySubtitles(emby);
     final showAuto = _showAutoEmbedded(emby, nativeMuxed);
+    final indexTracks = _embyIndexTracks ?? const {};
+    final fallbackTracks = fallbackEmbyIndexTrackMap(tracks, emby);
 
     await showDialog<void>(
       context: context,
@@ -1155,7 +1168,14 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                   ),
                 for (final o in embeddedEmby)
                   TvFocusListTile(
-                    title: o.label,
+                    title: embeddedSubtitleMenuLabel(
+                      o,
+                      indexTracks[o.index] ?? fallbackTracks[o.index],
+                    ),
+                    subtitle: _embeddedEmbySecondaryLabel(
+                      o,
+                      indexTracks[o.index] ?? fallbackTracks[o.index],
+                    ),
                     onActivate: () {
                       Navigator.pop(ctx);
                       _onSubtitleMenuSelected(o);
@@ -1538,6 +1558,8 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     final embeddedEmby = uniqueEmbeddedEmbySubtitles(emby);
     final externalEmby = externalEmbySubtitles(emby);
     final showAuto = _showAutoEmbedded(emby, nativeMuxed);
+    final indexTracks = _embyIndexTracks ?? const {};
+    final fallbackTracks = fallbackEmbyIndexTrackMap(tracks, emby);
 
     showModalBottomSheet<void>(
       context: context,
@@ -1573,8 +1595,27 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                 ),
               for (final o in embeddedEmby)
                 ListTile(
-                  title:
-                      Text(o.label, style: const TextStyle(color: _foreground)),
+                  title: Text(
+                    embeddedSubtitleMenuLabel(
+                      o,
+                      indexTracks[o.index] ?? fallbackTracks[o.index],
+                    ),
+                    style: const TextStyle(color: _foreground),
+                  ),
+                  subtitle: () {
+                    final secondary = _embeddedEmbySecondaryLabel(
+                      o,
+                      indexTracks[o.index] ?? fallbackTracks[o.index],
+                    );
+                    if (secondary == null) return null;
+                    return Text(
+                      secondary,
+                      style: const TextStyle(
+                        color: Color(0x99FFFFFF),
+                        fontSize: 12,
+                      ),
+                    );
+                  }(),
                   trailing: _isEmbySubtitleActive(o, currentSub)
                       ? Icon(Icons.check, color: _playerAccent(context))
                       : null,
