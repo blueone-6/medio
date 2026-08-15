@@ -284,7 +284,8 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   @override
   void initState() {
     super.initState();
-    _containerCache = ProviderScope.containerOf(context);
+    // NOTE: do NOT read inherited widgets (ProviderScope.containerOf) here —
+    // dependOnInheritedWidgetOfExactType throws during initState in debug builds.
     _playerStateStream = _createPlayerStateStream(widget.player);
     SubtitleSwitchQueue.busy.addListener(_onSubtitleBusyChanged);
     widget.volumeShowToken?.addListener(_onVolumeShowToken);
@@ -351,6 +352,11 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+
+    // Inherited widgets are only readable after initState; cache the container here
+    // so subtitle actions can still read providers after chrome auto-hide disposes
+    // this State (see _pickEmbySubtitle).
+    _containerCache ??= ProviderScope.containerOf(context);
     if (_restoredSavedSubtitleId) return;
     _restoredSavedSubtitleId = true;
     final saved = ref
