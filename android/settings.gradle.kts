@@ -1,3 +1,21 @@
+// 可选本地代理：android/gradle-proxy.properties（见 gradle-proxy.properties.example）
+run {
+    val proxyFile = file("gradle-proxy.properties")
+    if (proxyFile.exists()) {
+        val props = java.util.Properties()
+        proxyFile.inputStream().use { props.load(it) }
+        val enabled = props.getProperty("enabled", "true").equals("true", ignoreCase = true)
+        if (enabled) {
+            props.forEach { key, value ->
+                val k = key.toString()
+                if (k.startsWith("systemProp.")) {
+                    System.setProperty(k.removePrefix("systemProp."), value.toString())
+                }
+            }
+        }
+    }
+}
+
 pluginManagement {
     val flutterSdkPath =
         run {
@@ -11,10 +29,6 @@ pluginManagement {
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/central") }
-        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
         google()
         mavenCentral()
         gradlePluginPortal()

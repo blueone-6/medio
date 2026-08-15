@@ -1,0 +1,15 @@
+# 本地 Gradle 代理（勿提交仓库，已加入 .gitignore）
+#
+# 首次使用：
+#   copy android\gradle-proxy.properties.example android\gradle-proxy.properties
+# 或运行：  .\tool\setup_android_dev.ps1
+#
+# 不使用代理：删除 gradle-proxy.properties，或把 enabled 改为 false。
+#
+enabled=true
+systemProp.http.proxyHost=127.0.0.1
+systemProp.http.proxyPort=7890
+systemProp.https.proxyHost=127.0.0.1
+systemProp.https.proxyPort=7890
+# 官方源也统一走代理；仅本地地址不走代理
+systemProp.http.nonProxyHosts=localhost|127.0.0.1|::1|*.local

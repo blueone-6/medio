@@ -23,6 +23,9 @@ windows/flutter/generated_*
 .agents/
 skills-lock.json
 
+# Local network / build config
+android/gradle-proxy.properties
+
 # Large binaries / cache
 tool/.cache/
 

@@ -48,6 +48,16 @@ fvm flutter run -d windows
 
 > VSCode 安装 FVM 扩展后可自动切换到项目 SDK，终端内直接使用 `flutter` 命令。
 
+## Android 构建网络配置（官方源 + 本机代理）
+
+首次构建 Android 前，建议先启动本机代理并执行：
+
+```powershell
+.\tool\setup_android_dev.ps1
+```
+
+脚本会配置 `pub.dev`、`storage.googleapis.com`、Gradle 官方仓库与 `HTTP_PROXY` / Git 代理，并创建本机私有文件 `android/gradle-proxy.properties`。执行后请重新打开终端再运行 `fvm flutter pub get`。若代理端口不是默认 `7890`，修改 `android/gradle-proxy.properties` 后重新执行脚本。不要把阿里云、腾讯云或 Flutter 国内镜像加回构建配置。
+
 ## 编译
 
 ```bash

@@ -1,8 +1,6 @@
-# 预下载 media_kit Android libmpv JAR（构建时 Gradle 从 GitHub 拉取易超时）
+﻿# 预下载 media_kit Android libmpv JAR（构建时 Gradle 从 GitHub 拉取易超时）
 # 用法：.\tool\download_media_kit_android_libs.ps1
-# 可选代理：若需通过代理访问 GitHub，请提前设置 HTTPS_PROXY 环境变量，
-#           例如（PowerShell）：$env:HTTPS_PROXY = "http://你的代理地址:端口"
-#           未设置则直连。
+# 可选代理：与 android/gradle-proxy.properties 相同，默认 127.0.0.1:7890
 
 $ErrorActionPreference = "Stop"
 $version = "1.3.8"
@@ -10,9 +8,16 @@ $tag = "v1.1.7"
 $base = Join-Path $env:LOCALAPPDATA "Pub\Cache\hosted\pub.dev\media_kit_libs_android_video-$version\android\build\$tag"
 New-Item -ItemType Directory -Force -Path $base | Out-Null
 
-$proxy = $env:HTTPS_PROXY
-$proxyArgs = @{}
-if ($proxy) { $proxyArgs['Proxy'] = $proxy }
+$proxyHost = "127.0.0.1"
+$proxyPort = 7890
+$proxyFile = Join-Path (Split-Path $PSScriptRoot -Parent) "android\gradle-proxy.properties"
+if (Test-Path $proxyFile) {
+    foreach ($line in Get-Content $proxyFile) {
+        if ($line -match 'systemProp\.https\.proxyHost=(.+)') { $proxyHost = $Matches[1].Trim() }
+        if ($line -match 'systemProp\.https\.proxyPort=(.+)') { $proxyPort = $Matches[1].Trim() }
+    }
+}
+$proxy = "http://${proxyHost}:${proxyPort}"
 
 $files = @(
     "default-arm64-v8a.jar",
@@ -29,12 +34,7 @@ foreach ($name in $files) {
     }
     $url = "https://github.com/media-kit/libmpv-android-video-build/releases/download/$tag/$name"
     Write-Host "download $name ..."
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -TimeoutSec 600 @proxyArgs
-    } catch {
-        Write-Host "retry without proxy: $_"
-        Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -TimeoutSec 600
-    }
+    Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -TimeoutSec 600 -Proxy $proxy
 }
 
 Write-Host "done -> $base"
