@@ -19,6 +19,7 @@ import '../core/player/select_embedded_subtitle.dart';
 import '../core/player/subtitle_switch_queue.dart';
 import '../core/player/subtitle_render_mode.dart';
 import '../core/player/subtitle_mpv_probe.dart';
+import '../core/player/player_subtitle_position.dart';
 import '../core/player/episode_navigation.dart';
 import '../core/player/playback_resume.dart';
 import '../core/player/player_codec_error.dart';
@@ -3232,39 +3233,66 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                 final subFontSize = ref
                                     .watch(settingsServiceProvider)
                                     .subtitleFontSize;
-                                return Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    Video(
-                                      key: viewportKey,
-                                      controller: _controller!,
-                                      width: width,
-                                      height: height,
-                                      fit: fit,
-                                      controls: NoVideoControls,
-                                      subtitleViewConfiguration:
-                                          PlayerSubtitleStyle.configuration(
-                                        fontSize: subFontSize,
-                                        visible: false,
-                                        bottomPadding: subBottom,
-                                      ),
-                                    ),
-                                    if (overlay)
-                                      Positioned.fill(
-                                        child: IgnorePointer(
-                                          child: SubtitleView(
-                                            controller: _controller!,
-                                            configuration:
-                                                PlayerSubtitleStyle
-                                                    .configuration(
-                                              fontSize: subFontSize,
-                                              visible: true,
-                                              bottomPadding: subBottom,
-                                            ),
+                                // The video is letterboxed (BoxFit.contain) on
+                                // portrait / non-matching viewports, so an
+                                // overlay anchored to the screen bottom drops
+                                // muxed-text subs into the black bar below the
+                                // video. Offset by the bottom bar to keep them
+                                // just above the video frame. VideoParams is a
+                                // stream — aspect arrives after first decode.
+                                return StreamBuilder<VideoParams>(
+                                  stream: _player.stream.videoParams,
+                                  initialData: _player.state.videoParams,
+                                  builder: (context, paramsSnap) {
+                                    final params = paramsSnap.data ??
+                                        _player.state.videoParams;
+                                    final resolvedSubBottom = subBottom +
+                                        subtitleLetterboxBottom(
+                                          viewportWidth: width,
+                                          viewportHeight: height,
+                                          aspect: params.aspect,
+                                          dw: params.dw,
+                                          dh: params.dh,
+                                          w: params.w,
+                                          h: params.h,
+                                        );
+                                    return Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        Video(
+                                          key: viewportKey,
+                                          controller: _controller!,
+                                          width: width,
+                                          height: height,
+                                          fit: fit,
+                                          controls: NoVideoControls,
+                                          subtitleViewConfiguration:
+                                              PlayerSubtitleStyle
+                                                  .configuration(
+                                            fontSize: subFontSize,
+                                            visible: false,
+                                            bottomPadding: resolvedSubBottom,
                                           ),
                                         ),
-                                      ),
-                                  ],
+                                        if (overlay)
+                                          Positioned.fill(
+                                            child: IgnorePointer(
+                                              child: SubtitleView(
+                                                controller: _controller!,
+                                                configuration:
+                                                    PlayerSubtitleStyle
+                                                        .configuration(
+                                                  fontSize: subFontSize,
+                                                  visible: true,
+                                                  bottomPadding:
+                                                      resolvedSubBottom,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    );
+                                  },
                                 );
                               },
                             );
