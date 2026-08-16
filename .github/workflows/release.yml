@@ -84,6 +84,7 @@ jobs:
         run: |
           tag="${{ github.ref_name }}"
           gh release create "$tag" \
+            --repo "${{ github.repository }}" \
             --generate-notes \
             --title "$tag" \
             windows-x64/medio-community-*.zip \
