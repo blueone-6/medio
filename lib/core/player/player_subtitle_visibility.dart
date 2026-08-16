@@ -299,9 +299,11 @@ extension PlayerSubtitleVisibility on Player {
       posBeforeSid = null;
     }
 
-    await _mpvSetSid(track.id);
-
+    // Seek-then-select: on Android strm-over-CDN MKV, the position restore can
+    // reinitialize MediaCodec/audio and reset `sid` if it runs after selection.
+    // The text branch already uses this order; keep bitmap tracks consistent.
     await _restorePositionAfterSubtitleSwitch(posBeforeSid);
+    await _mpvSetSid(track.id);
 
     if (!verifySid) return true;
 
