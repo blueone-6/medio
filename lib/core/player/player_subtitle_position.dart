@@ -1,3 +1,75 @@
+import 'dart:ui' show Rect;
+
+import 'package:media_kit/media_kit.dart';
+
+/// Uses the controller's real display rect (dw/dh after aspect correction and
+/// rotation — the same size media_kit's FittedBox uses), then decoded
+/// [VideoParams], then item metadata.
+double subtitleLetterboxBottomForVideo({
+  required double viewportWidth,
+  required double viewportHeight,
+  Rect? videoRect,
+  VideoParams? params,
+  int? fallbackWidth,
+  int? fallbackHeight,
+}) {
+  final rw = videoRect?.width;
+  final rh = videoRect?.height;
+  if (rw != null && rh != null && rw > 0 && rh > 0) {
+    return subtitleLetterboxBottom(
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight,
+      w: rw.round(),
+      h: rh.round(),
+    );
+  }
+  if (params != null) {
+    return subtitleLetterboxBottomForParams(
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight,
+      params: params,
+      fallbackWidth: fallbackWidth,
+      fallbackHeight: fallbackHeight,
+    );
+  }
+  return subtitleLetterboxBottom(
+    viewportWidth: viewportWidth,
+    viewportHeight: viewportHeight,
+    w: fallbackWidth,
+    h: fallbackHeight,
+  );
+}
+
+/// Uses media metadata before mpv reports decoded dimensions, then delegates
+/// to [subtitleLetterboxBottom].
+double subtitleLetterboxBottomForParams({
+  required double viewportWidth,
+  required double viewportHeight,
+  required VideoParams params,
+  int? fallbackWidth,
+  int? fallbackHeight,
+}) {
+  final hasDecodedDimensions =
+      (params.aspect != null && params.aspect! > 0) ||
+          (params.dw != null &&
+              params.dw! > 0 &&
+              params.dh != null &&
+              params.dh! > 0) ||
+          (params.w != null &&
+              params.w! > 0 &&
+              params.h != null &&
+              params.h! > 0);
+
+  return subtitleLetterboxBottom(
+    viewportWidth: viewportWidth,
+    viewportHeight: viewportHeight,
+    aspect: params.aspect,
+    dw: params.dw,
+    dh: params.dh,
+    w: hasDecodedDimensions ? params.w : fallbackWidth,
+    h: hasDecodedDimensions ? params.h : fallbackHeight,
+  );
+}
 /// Bottom black-bar height of the letterbox that `BoxFit.contain` leaves
 /// below the video frame for a `viewportWidth × viewportHeight` viewport.
 ///

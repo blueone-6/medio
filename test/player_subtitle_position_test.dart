@@ -1,4 +1,6 @@
+import 'dart:ui' show Rect;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:media_kit/media_kit.dart';
 
 import 'package:media_client/core/player/player_subtitle_position.dart';
 
@@ -71,6 +73,30 @@ void main() {
       expect(bar, closeTo(0, 0.001));
     });
 
+    test('uses item dimensions before mpv reports decoded video dimensions',
+        () {
+      final bar = subtitleLetterboxBottomForParams(
+        viewportWidth: 390,
+        viewportHeight: 844,
+        params: const VideoParams(),
+        fallbackWidth: 3840,
+        fallbackHeight: 2160,
+      );
+
+      expect(bar, closeTo(312.3125, 0.001));
+    });
+
+    test('prefers decoded video dimensions over item metadata', () {
+      final bar = subtitleLetterboxBottomForParams(
+        viewportWidth: 390,
+        viewportHeight: 844,
+        params: const VideoParams(w: 1440, h: 1080),
+        fallbackWidth: 3840,
+        fallbackHeight: 2160,
+      );
+
+      expect(bar, closeTo(275.75, 0.001));
+    });
     test('returns 0 for degenerate viewport dimensions', () {
       expect(
         subtitleLetterboxBottom(
@@ -80,6 +106,32 @@ void main() {
         ),
         0,
       );
+    });
+    test('landscape 21:9 video on 20:9 phone anchors subtitles to the video',
+        () {
+      final bar = subtitleLetterboxBottomForVideo(
+        viewportWidth: 2340,
+        viewportHeight: 1080,
+        videoRect: const Rect.fromLTWH(0, 0, 2581, 1080),
+        params: const VideoParams(),
+        fallbackWidth: 3840,
+        fallbackHeight: 2160,
+      );
+
+      expect(bar, closeTo(50.422, 0.01));
+    });
+
+    test('video rect wins over item metadata', () {
+      final bar = subtitleLetterboxBottomForVideo(
+        viewportWidth: 1080,
+        viewportHeight: 1920,
+        videoRect: const Rect.fromLTWH(0, 0, 1920, 800),
+        params: const VideoParams(),
+        fallbackWidth: 3840,
+        fallbackHeight: 2160,
+      );
+
+      expect(bar, closeTo(735.0, 0.001));
     });
   });
 }

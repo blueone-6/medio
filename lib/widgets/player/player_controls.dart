@@ -79,8 +79,15 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   String? _activeEmbySubtitleId;
   String? _pendingEmbySubtitleId;
   bool _autoSubtitleActive = false;
+  /// Set once the user has picked a subtitle from the menu. After that the
+  /// manually-set [_activeEmbySubtitleId] is authoritative — the auto-stale
+  /// reconciliation in [_syncActiveSubtitleFromCurrentTrack] must not override
+  /// a deliberate pick (its Emby→sid map can be wrong on ff-index collisions,
+  /// which would move the checkmark off the just-picked PGS row).
+  bool _manualSubtitlePickMade = false;
   Map<int, SubtitleTrack>? _embyIndexTracks;
   StreamSubscription<Tracks>? _tracksSub;
+  StreamSubscription<Track>? _trackSub;
   // Cached at initState so `_pickEmbySubtitle` can read providers AFTER the
   // State is disposed by chrome auto-hide (which swaps PlayerControls for
   // SizedBox.shrink 4s after the user opens the subtitle picker sheet).
@@ -257,11 +264,19 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     });
   }
 
-  PlaybackPreferencesService get _playbackPrefs =>
-      ref.read(playbackPreferencesServiceProvider);
 
-  Future<void> _persistSubtitleSelection(String? selection) =>
-      _playbackPrefs.setSubtitleSelection(widget.itemId, selection);
+  Future<void> _persistSubtitleSelection(String? selection) {
+    // ref.read throws once this State is disposed (chrome auto-hide can tear
+    // down the controls while a subtitle switch is still in flight). Use the
+    // cached ProviderContainer so the new selection is always persisted —
+    // otherwise the next controls instance restores the OLD subtitle and the
+    // menu checkmark stays on the previous track.
+    final container = _containerCache;
+    final prefs = container != null
+        ? container.read(playbackPreferencesServiceProvider)
+        : ref.read(playbackPreferencesServiceProvider);
+    return prefs.setSubtitleSelection(widget.itemId, selection);
+  }
 
   bool _restoredSavedSubtitleId = false;
 
@@ -297,6 +312,9 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     _tracksSub = widget.player.stream.tracks.listen((_) {
       unawaited(_refreshEmbyTrackMap());
     });
+    _trackSub = widget.player.stream.track.listen((_) {
+      _syncActiveSubtitleFromCurrentTrack();
+    });
     unawaited(_refreshEmbyTrackMap());
   }
 
@@ -320,6 +338,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   void dispose() {
     SubtitleSwitchQueue.busy.removeListener(_onSubtitleBusyChanged);
     _tracksSub?.cancel();
+    _trackSub?.cancel();
     widget.volumeShowToken?.removeListener(_onVolumeShowToken);
     _volumeHideTimer?.cancel();
     super.dispose();
@@ -528,6 +547,24 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     );
   }
 
+  String _activeSubtitleMenuLabel(SubtitleTrack? currentSub) {
+    if (_autoSubtitleActive) return '自动（内嵌）';
+    final selectionId = _pendingEmbySubtitleId ?? _activeEmbySubtitleId;
+    if (selectionId != null) {
+      for (final option in widget.embySubtitles) {
+        if (option.selectionId != selectionId) continue;
+        final native = _embyIndexTracks?[option.index] ??
+            fallbackEmbyIndexTrackMap(
+              _player.state.tracks,
+              widget.embySubtitles,
+            )[option.index];
+        return embeddedSubtitleMenuLabel(option, native);
+      }
+    }
+    if (currentSub == null || currentSub.id == 'no') return '关闭字幕';
+    return _subtitleMenuLabel(currentSub);
+  }
+
   String _subtitleMenuLabel(SubtitleTrack t) {
     if (t.id == 'auto') return '自动';
     if (t.id == 'no') return '关闭字幕';
@@ -609,6 +646,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     unawaited(
       SubtitleSwitchQueue.runSerial((gen) async {
         if (!mounted) return;
+        _manualSubtitlePickMade = true;
         SubtitleSwitchQueue.recordSwitchStart(_player.state.position);
         setState(() {
           _pendingEmbySubtitleId = null;
@@ -647,14 +685,15 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                 emby: emby,
                 generation: gen,
               );
-              if (!mounted || !SubtitleSwitchQueue.isCurrent(gen)) return;
+              if (!SubtitleSwitchQueue.isCurrent(gen)) return;
               if (ok) {
+                await _persistSubtitleSelection(embyOpt.selectionId);
+                if (!mounted) return;
                 setState(() {
                   _activeEmbySubtitleId = embyOpt.selectionId;
                   _autoSubtitleActive = false;
                 });
-                await _persistSubtitleSelection(embyOpt.selectionId);
-                if (mounted && SubtitleSwitchQueue.isCurrent(gen)) {
+                if (SubtitleSwitchQueue.isCurrent(gen)) {
                   await _reapplySubtitleDelay();
                 }
                 return;
@@ -679,7 +718,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                 _player.activateSubtitleTrack(t, reason: 'menu_track_${t.id}'),
           );
         }
-        if (!mounted || !SubtitleSwitchQueue.isCurrent(gen)) return;
+        if (!SubtitleSwitchQueue.isCurrent(gen)) return;
 
         if (!ok && t.id != 'no' && t.id != 'auto') {
           if (mounted) {
@@ -749,6 +788,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
         // Do NOT bail on !mounted here — the subtitle switch must complete
         // even if PlayerControls was disposed by chrome auto-hide while the
         // picker sheet was open. UI refresh is guarded below.
+        _manualSubtitlePickMade = true;
         final native = indexTracks?[option.index] ??
             fallbackEmbyIndexTrackMap(
               player.state.tracks,
@@ -762,23 +802,28 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
           resolvedMuxed: native,
         );
         if (!SubtitleSwitchQueue.isCurrent(gen)) return;
-        if (!mounted) return;
-
-        setState(() {
-          _pendingEmbySubtitleId = null;
-          if (ok) {
-            _activeEmbySubtitleId = option.selectionId;
-            _autoSubtitleActive = false;
-          } else {
+        if (!ok) {
+          if (!mounted) return;
+          setState(() {
+            _pendingEmbySubtitleId = null;
             _activeEmbySubtitleId = prevEmbyId;
             _autoSubtitleActive = prevAuto;
             if (option.isBitmapSubtitle) _showPgsUnavailableHint();
-          }
-        });
-
-        if (!ok) return;
+          });
+          return;
+        }
+        // Persist BEFORE the mounted check: chrome auto-hide may have disposed
+        // this State while the picker sheet was open. Without persisting here
+        // the next PlayerControls instance restores the OLD saved selection,
+        // leaving the menu checkmark on the previous subtitle.
         await _persistSubtitleSelection(option.selectionId);
-        if (mounted && SubtitleSwitchQueue.isCurrent(gen)) {
+        if (!mounted) return;
+        setState(() {
+          _pendingEmbySubtitleId = null;
+          _activeEmbySubtitleId = option.selectionId;
+          _autoSubtitleActive = false;
+        });
+        if (SubtitleSwitchQueue.isCurrent(gen)) {
           await _reapplySubtitleDelay();
         }
       }),
@@ -797,29 +842,40 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     if (merged.isEmpty) return;
 
     final prev = _embyIndexTracks;
-    if (prev != null &&
+    final unchanged = prev != null &&
         prev.length == merged.length &&
-        merged.entries.every((e) => prev[e.key]?.id == e.value.id)) {
+        merged.entries.every((e) => prev[e.key]?.id == e.value.id);
+    if (unchanged) {
       _embyIndexTracks = merged;
+    } else {
+      setState(() => _embyIndexTracks = merged);
+    }
+
+    // media_kit's high-level Track state can still name the previous text
+    // track after a bitmap switch was applied through raw mpv commands. Query
+    // mpv's actual sid and map it back to the Emby stream.
+    final sid = await _player.mpvSubtitleId();
+    if (!mounted) return;
+    final directOption =
+        embyOptionForMpvSid(sid, widget.embySubtitles, merged);
+    if (directOption != null &&
+        !_subtitleSwitching &&
+        _pendingEmbySubtitleId == null &&
+        _activeEmbySubtitleId != directOption.selectionId) {
+      setState(() {
+        _activeEmbySubtitleId = directOption.selectionId;
+        _autoSubtitleActive = false;
+      });
       return;
     }
-    setState(() => _embyIndexTracks = merged);
-  }
-
-  bool _subtitleTrackMatchesEmbyOption(SubtitleTrack t, EmbySubtitleOption o) {
-    if (t.id == o.streamUrl) return true;
-    if (t.id == o.selectionId) return true;
-    if (t.title != null && t.title!.isNotEmpty && t.title == o.label) {
-      return true;
-    }
-    return false;
+    _syncActiveSubtitleFromCurrentTrack();
   }
 
   bool _isEmbyManagedSubtitleTrack(
       SubtitleTrack t, List<EmbySubtitleOption> emby) {
     for (final o in emby) {
       if (!o.isExternal) continue;
-      if (_subtitleTrackMatchesEmbyOption(t, o)) return true;
+      if (subtitleTrackMatchesEmbyOption(t, o)) return true;
     }
     return false;
   }
@@ -847,9 +903,47 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     if (_activeEmbySubtitleId == option.selectionId) return true;
     if (cur == null) return false;
     if (option.isExternal) {
-      return _subtitleTrackMatchesEmbyOption(cur, option);
+      return subtitleTrackMatchesEmbyOption(cur, option);
     }
     return muxedTrackMatchesEmbyOption(cur, option);
+  }
+
+  /// Reconciles the active-subtitle UI state with what mpv is actually showing.
+  ///
+  /// The checkmark must follow the real track, not a stale saved preference:
+  /// on strm-over-CDN / go-emby2openlist lazy resolution the first PlaybackInfo
+  /// may not contain the saved option, so the player auto-activates the
+  /// preferred/default subtitle (often PGS) while [_activeEmbySubtitleId] still
+  /// holds the old text/external id. Without this, PGS renders but the menu
+  /// keeps its checkmark on the old text/external row.
+  ///
+  /// Only POSITIVE corrections are made: when the current mpv track can be
+  /// resolved to an Emby option different from [_activeEmbySubtitleId], we
+  /// switch to it. When the track cannot be resolved (map not ready, label
+  /// mismatch, native track without Emby metadata) we leave the state alone —
+  /// never clear a deliberate manual selection to null.
+  void _syncActiveSubtitleFromCurrentTrack() {
+    if (_subtitleSwitching) return;
+    if (_pendingEmbySubtitleId != null) return;
+    if (_autoSubtitleActive) return;
+    // Once the user picks a subtitle, the manually-set state is authoritative.
+    if (_manualSubtitlePickMade) return;
+    final cur = _player.state.track.subtitle;
+    if (cur.id == 'auto' || cur.id == 'no') return;
+
+    final curOption = embyOptionForSubtitleTrack(
+      cur,
+      widget.embySubtitles,
+      _embyIndexTracks,
+    );
+    if (curOption == null) return;
+    if (_activeEmbySubtitleId == curOption.selectionId) return;
+    if (mounted) {
+      setState(() {
+        _activeEmbySubtitleId = curOption.selectionId;
+        _autoSubtitleActive = false;
+      });
+    }
   }
 
   static Widget _menuSectionLabel(String text) {
@@ -1462,20 +1556,18 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
   /// Unified "more" menu — a centered sheet in the subtitle-panel style.
   /// Each row (倍速 / 音轨 / 字幕 / 字幕偏移) pushes a nested page to adjust.
-  void _showMoreMenu(
+  Future<void> _showMoreMenu(
     Tracks tracks,
     SubtitleTrack? currentSub,
     AudioTrack? currentAudio,
     double rate,
-  ) {
+  ) async {
     _notify();
-    unawaited(_refreshEmbyTrackMap());
+    await _refreshEmbyTrackMap();
 
     final settings = ref.read(settingsServiceProvider);
     final offset = settings.subtitleOffsetMs;
-    final subLabel = currentSub == null || currentSub.id == 'no'
-        ? '关闭字幕'
-        : _subtitleMenuLabel(currentSub);
+    final subLabel = _activeSubtitleMenuLabel(currentSub);
     final audioLabel =
         currentAudio == null ? '默认' : audioTrackLabel(currentAudio);
 
@@ -1703,9 +1795,9 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   Future<void> _showSubtitlePicker(
     Tracks tracks,
     SubtitleTrack? currentSub,
-  ) {
+  ) async {
     _notify();
-    unawaited(_refreshEmbyTrackMap());
+    await _refreshEmbyTrackMap();
     return _showPlayerMenuSheet(
       title: '字幕',
       showCount: true,

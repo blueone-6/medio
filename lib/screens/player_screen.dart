@@ -3240,57 +3240,75 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                 // video. Offset by the bottom bar to keep them
                                 // just above the video frame. VideoParams is a
                                 // stream — aspect arrives after first decode.
-                                return StreamBuilder<VideoParams>(
-                                  stream: _player.stream.videoParams,
-                                  initialData: _player.state.videoParams,
-                                  builder: (context, paramsSnap) {
-                                    final params = paramsSnap.data ??
-                                        _player.state.videoParams;
-                                    final resolvedSubBottom = subBottom +
-                                        subtitleLetterboxBottom(
-                                          viewportWidth: width,
-                                          viewportHeight: height,
-                                          aspect: params.aspect,
-                                          dw: params.dw,
-                                          dh: params.dh,
-                                          w: params.w,
-                                          h: params.h,
-                                        );
-                                    return Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        Video(
-                                          key: viewportKey,
-                                          controller: _controller!,
-                                          width: width,
-                                          height: height,
-                                          fit: fit,
-                                          controls: NoVideoControls,
-                                          subtitleViewConfiguration:
-                                              PlayerSubtitleStyle
-                                                  .configuration(
-                                            fontSize: subFontSize,
-                                            visible: false,
-                                            bottomPadding: resolvedSubBottom,
-                                          ),
-                                        ),
-                                        if (overlay)
-                                          Positioned.fill(
-                                            child: IgnorePointer(
-                                              child: SubtitleView(
-                                                controller: _controller!,
-                                                configuration:
-                                                    PlayerSubtitleStyle
-                                                        .configuration(
-                                                  fontSize: subFontSize,
-                                                  visible: true,
-                                                  bottomPadding:
-                                                      resolvedSubBottom,
-                                                ),
+                                return ValueListenableBuilder<Rect?>(
+                                  valueListenable: _controller!.rect,
+                                  builder: (context, videoRect, _) {
+                                    return StreamBuilder<VideoParams>(
+                                      stream: _player.stream.videoParams,
+                                      initialData: _player.state.videoParams,
+                                      builder: (context, paramsSnap) {
+                                        final params = paramsSnap.data ??
+                                            _player.state.videoParams;
+                                        // The controller rect is the real
+                                        // display size (dw/dh after aspect
+                                        // correction and rotation) — the same
+                                        // size the Video FittedBox renders
+                                        // with — so subtitles align with the
+                                        // visible frame even when container
+                                        // aspect differs from item metadata.
+                                        final resolvedSubBottom = subBottom +
+                                            subtitleLetterboxBottomForVideo(
+                                              viewportWidth: width,
+                                              viewportHeight: height,
+                                              videoRect: videoRect,
+                                              params: params,
+                                              fallbackWidth:
+                                                  _currentItem?.videoWidth,
+                                              fallbackHeight:
+                                                  _currentItem?.videoHeight,
+                                            );
+                                        return Stack(
+                                          fit: StackFit.expand,
+                                          children: [
+                                            Video(
+                                              key: viewportKey,
+                                              controller: _controller!,
+                                              width: width,
+                                              height: height,
+                                              fit: fit,
+                                              controls: NoVideoControls,
+                                              subtitleViewConfiguration:
+                                                  PlayerSubtitleStyle
+                                                      .configuration(
+                                                fontSize: subFontSize,
+                                                visible: false,
+                                                bottomPadding:
+                                                    resolvedSubBottom,
                                               ),
                                             ),
-                                          ),
-                                      ],
+                                            if (overlay)
+                                              Positioned.fill(
+                                                child: IgnorePointer(
+                                                  child: SubtitleView(
+                                                    key: PlayerSubtitleStyle
+                                                        .viewKey(
+                                                      resolvedSubBottom,
+                                                    ),
+                                                    controller: _controller!,
+                                                    configuration:
+                                                        PlayerSubtitleStyle
+                                                            .configuration(
+                                                      fontSize: subFontSize,
+                                                      visible: true,
+                                                      bottomPadding:
+                                                          resolvedSubBottom,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        );
+                                      },
                                     );
                                   },
                                 );

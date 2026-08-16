@@ -11,6 +11,63 @@ bool muxedTrackMatchesEmbyOption(SubtitleTrack track, EmbySubtitleOption option)
   return _labelMatches(track, option);
 }
 
+/// Whether [track] is the active external subtitle for [option].
+bool subtitleTrackMatchesEmbyOption(SubtitleTrack t, EmbySubtitleOption o) {
+  if (!o.isExternal) return false;
+  if (t.id == 'auto' || t.id == 'no') return false;
+  if (t.id == o.streamUrl) return true;
+  if (t.id == o.selectionId) return true;
+  if (t.title != null && t.title!.isNotEmpty && t.title == o.label) {
+    return true;
+  }
+  return false;
+}
+
+/// Resolves which Emby option the currently active [track] corresponds to.
+///
+/// Prefers an exact mpv `sid` match via [indexTracks] (Emby index → resolved
+/// muxed track); falls back to label matching when the map isn't ready.
+/// Returns null when the active track has no Emby counterpart (e.g. a native
+/// muxed track with no Emby metadata).
+EmbySubtitleOption? embyOptionForSubtitleTrack(
+  SubtitleTrack track,
+  Iterable<EmbySubtitleOption> options,
+  Map<int, SubtitleTrack>? indexTracks,
+) {
+  if (track.id == 'auto' || track.id == 'no') return null;
+  if (track.uri || track.data) {
+    for (final o in options) {
+      if (subtitleTrackMatchesEmbyOption(track, o)) return o;
+    }
+    return null;
+  }
+  for (final o in options) {
+    if (o.isExternal) continue;
+    final resolved = indexTracks?[o.index];
+    if (resolved != null && resolved.id == track.id) return o;
+    if (resolved == null && muxedTrackMatchesEmbyOption(track, o)) return o;
+  }
+  return null;
+}
+
+/// Resolves the selected Emby option directly from mpv's raw `sid`.
+///
+/// PGS selection may be written with a raw mpv command while media_kit's
+/// high-level track state still contains the previous text track. The menu must
+/// trust the actual mpv `sid` when it can be mapped back to an Emby stream.
+EmbySubtitleOption? embyOptionForMpvSid(
+  String? sid,
+  Iterable<EmbySubtitleOption> options,
+  Map<int, SubtitleTrack>? indexTracks,
+) {
+  if (sid == null || sid.isEmpty || sid == 'no' || sid == 'auto') return null;
+  for (final o in options) {
+    final track = indexTracks?[o.index];
+    if (track != null && track.id == sid) return o;
+  }
+  return null;
+}
+
 bool _labelMatches(SubtitleTrack track, EmbySubtitleOption option) {
   if (option.isBitmapSubtitle || option.format == 'pgs') {
     if (!isPgsMuxedSubtitle(track)) return false;

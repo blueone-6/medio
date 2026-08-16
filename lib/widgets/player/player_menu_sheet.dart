@@ -24,7 +24,8 @@ class PlayerMenuRow {
 }
 
 class _PlayerMenuPage {
-  const _PlayerMenuPage({required this.title, this.countText, required this.rows});
+  const _PlayerMenuPage(
+      {required this.title, this.countText, required this.rows});
 
   final String title;
   final String? countText;
@@ -75,7 +76,8 @@ class _PlayerMenuSheetState extends State<PlayerMenuSheet> {
   void _push(List<PlayerMenuRow> rows, String title, String? countText) {
     setState(() {
       _animatingForward = true;
-      _stack.add(_PlayerMenuPage(title: title, countText: countText, rows: rows));
+      _stack
+          .add(_PlayerMenuPage(title: title, countText: countText, rows: rows));
     });
   }
 
@@ -91,13 +93,24 @@ class _PlayerMenuSheetState extends State<PlayerMenuSheet> {
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
     final width = (size.width * 0.72).clamp(300.0, 400.0);
-    final height = size.height - MediaQuery.paddingOf(context).vertical - 24;
+    // Size the panel to its content (capped at ~72% of the available height)
+    // instead of filling the whole screen. A full-height sheet wrapped in
+    // Center pinned the list to the top of the screen; sizing to content lets
+    // the panel sit in the vertical middle (e.g. the short "更多" menu). Long
+    // lists (subtitle picker) stay within the cap and scroll.
+    final available = size.height - MediaQuery.paddingOf(context).vertical - 24;
+    var contentH = 16.0; // ListView vertical padding
+    for (final r in _page.rows) {
+      contentH += r.sectionTitle != null ? 26.0 : PlayerMenuSheet.rowHeight;
+    }
+    contentH += 70.0; // header + divider + spacing
+    final height = contentH.clamp(0.0, available * 0.72).toDouble();
 
     return SizedBox(
       width: width,
       height: height,
       child: Material(
-        color: const Color(0xEE101010),
+        color: const Color(0xB3101010),
         borderRadius: BorderRadius.circular(16),
         clipBehavior: Clip.antiAlias,
         child: SafeArea(

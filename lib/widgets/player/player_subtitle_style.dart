@@ -15,6 +15,10 @@ abstract final class PlayerSubtitleStyle {
   /// is intentionally `null` — let `SubtitleView` compute it from viewport area
   /// (sqrt(nr / 1920*1080), clamped to 1.0); hardcoding 1.15 over-magnified
   /// subtitles on phone screens where nr ≈ dr already.
+  /// [SubtitleView] copies configuration.padding into its state only once and
+  /// has no didUpdateWidget handling. Recreate it when orientation changes the
+  /// letterbox-derived bottom padding.
+  static Key viewKey(double bottomPadding) => ValueKey<double>(bottomPadding);
   static SubtitleViewConfiguration configuration({
     double fontSize = 48,
     bool visible = true,

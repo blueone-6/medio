@@ -39,7 +39,10 @@ void main() {
 
     final panelSize = tester.getSize(find.byType(PlayerMenuSheet));
     expect(panelSize.width, 400);
-    expect(panelSize.height, 696);
+    // Content-driven height: 3 rows (48 + 26 section + 48) + header/spacing
+    // ≈ 208, capped at 72% of the 720-high screen — the panel stays centered
+    // instead of filling the whole screen.
+    expect(panelSize.height, 208);
 
     final rows = find.byType(InkWell);
     expect(tester.getSize(rows.at(1)).height, 48);
