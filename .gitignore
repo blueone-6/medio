@@ -39,3 +39,6 @@ errors-*.log
 
 # FVM Version Cache
 .fvm/
+
+# brainstorm visual companion sessions
+.superpowers/

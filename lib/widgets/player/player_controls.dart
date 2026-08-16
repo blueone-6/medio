@@ -19,7 +19,7 @@ import '../../core/player/subtitle_track_kind.dart';
 import '../../core/player/player_subtitle_delay.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radius.dart';
-import 'player_subtitle_panel.dart';
+import 'player_menu_sheet.dart';
 
 import '../../models/emby/emby_subtitle_option.dart';
 import '../../providers/settings_provider.dart';
@@ -1455,44 +1455,87 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     AudioTrack? currentAudio,
     double rate,
   ) {
-    return Theme(
-      data: _popupTheme(context),
-      child: PopupMenuButton<String>(
-        tooltip: '更多',
-        color: _popupBg,
-        icon: const Icon(Icons.more_vert, color: _foreground, size: _iconSize),
-        onOpened: _notify,
-        itemBuilder: (ctx) => [
+    return _compactIconBtn(Icons.more_vert, '更多', _foreground, () {
+      _showMoreMenu(tracks, currentSub, currentAudio, rate);
+    });
+  }
+
+  /// Unified "more" menu — a centered sheet in the subtitle-panel style.
+  /// Each row (倍速 / 音轨 / 字幕 / 字幕偏移) pushes a nested page to adjust.
+  void _showMoreMenu(
+    Tracks tracks,
+    SubtitleTrack? currentSub,
+    AudioTrack? currentAudio,
+    double rate,
+  ) {
+    _notify();
+    unawaited(_refreshEmbyTrackMap());
+
+    final settings = ref.read(settingsServiceProvider);
+    final offset = settings.subtitleOffsetMs;
+    final subLabel = currentSub == null || currentSub.id == 'no'
+        ? '关闭字幕'
+        : _subtitleMenuLabel(currentSub);
+    final audioLabel =
+        currentAudio == null ? '默认' : audioTrackLabel(currentAudio);
+
+    _showPlayerMenuSheet(
+      title: '更多',
+      rowsBuilder: (popSheet) {
+        final rateRows = [
           for (final r in _playbackRates)
-            PopupMenuItem(
-              value: 'rate:$r',
-              child: _popupRow(
-                  selected: (r - rate).abs() < 0.001,
-                  label: '倍速 ${_fmtRate(r)}'),
+            PlayerMenuRow(
+              label: _fmtRate(r),
+              selected: (r - rate).abs() < 0.001,
+              onTap: () {
+                _pickRate(r);
+                popSheet();
+              },
             ),
-          const PopupMenuDivider(),
-          const PopupMenuItem(
-              value: 'audio',
-              child: Text('音轨', style: TextStyle(color: _foreground))),
-          const PopupMenuItem(
-              value: 'subtitle',
-              child: Text('字幕', style: TextStyle(color: _foreground))),
-          const PopupMenuItem(
-              value: 'suboffset',
-              child: Text('字幕偏移', style: TextStyle(color: _foreground))),
-        ],
-        onSelected: (value) {
-          if (value.startsWith('rate:')) {
-            _pickRate(double.parse(value.substring(5)));
-          } else if (value == 'audio') {
-            _showAudioTrackPicker(tracks, currentAudio);
-          } else if (value == 'subtitle') {
-            _showSubtitlePicker(tracks, currentSub);
-          } else if (value == 'suboffset') {
-            _showSubtitleOffsetDialog();
-          }
-        },
-      ),
+        ];
+        final audioRows = [
+          for (final a
+              in tracks.audio.where((t) => t.id != 'auto' && t.id != 'no'))
+            PlayerMenuRow(
+              label: audioTrackLabel(a),
+              selected: currentAudio?.id == a.id,
+              onTap: () {
+                _notify();
+                unawaited(_player.setAudioTrack(a));
+                popSheet();
+              },
+            ),
+        ];
+        final subRows = _buildSubtitleMenuRows(tracks, currentSub, popSheet);
+        final offsetRows = [
+          PlayerMenuRow(label: '当前偏移', value: _fmtOffset(offset)),
+          PlayerMenuRow(
+            label: '提前 0.1s',
+            onTap: () => unawaited(_adjustSubDelay(-100)),
+          ),
+          PlayerMenuRow(
+            label: '延后 0.1s',
+            onTap: () => unawaited(_adjustSubDelay(100)),
+          ),
+          PlayerMenuRow(
+            label: '精确调节',
+            onTap: () {
+              popSheet();
+              _showSubtitleOffsetDialog();
+            },
+          ),
+        ];
+        return [
+          PlayerMenuRow(
+              label: '倍速', value: _fmtRate(rate), children: rateRows),
+          PlayerMenuRow(
+              label: '音轨', value: audioLabel, children: audioRows),
+          PlayerMenuRow(
+              label: '字幕', value: subLabel, children: subRows),
+          PlayerMenuRow(
+              label: '字幕偏移', value: _fmtOffset(offset), children: offsetRows),
+        ];
+      },
     );
   }
 
@@ -1532,39 +1575,65 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
   void _showAudioTrackPicker(Tracks tracks, AudioTrack? currentAudio) {
     _notify();
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: _popupBg,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final a
-                in tracks.audio.where((t) => t.id != 'auto' && t.id != 'no'))
-              ListTile(
-                title: Text(a.title ?? a.language ?? a.id,
-                    style: const TextStyle(color: _foreground)),
-                trailing: currentAudio?.id == a.id
-                    ? Icon(Icons.check, color: _playerAccent(context))
-                    : null,
-                onTap: () {
-                  _player.setAudioTrack(a);
-                  Navigator.pop(ctx);
-                },
-              ),
-          ],
-        ),
-      ),
+    _showPlayerMenuSheet(
+      title: '音轨',
+      showCount: true,
+      rowsBuilder: (popSheet) => [
+        for (final a
+            in tracks.audio.where((t) => t.id != 'auto' && t.id != 'no'))
+          PlayerMenuRow(
+            label: audioTrackLabel(a),
+            selected: currentAudio?.id == a.id,
+            onTap: () {
+              _notify();
+              unawaited(_player.setAudioTrack(a));
+              popSheet();
+            },
+          ),
+      ],
     );
   }
 
-  Future<void> _showSubtitlePicker(
+  /// Opens a centered [PlayerMenuSheet] with the same visual language as the
+  /// subtitle picker. [rowsBuilder] receives a callback that closes the sheet
+  /// so leaf actions can apply and dismiss in one tap.
+  Future<void> _showPlayerMenuSheet({
+    required String title,
+    required List<PlayerMenuRow> Function(VoidCallback popSheet) rowsBuilder,
+    bool showCount = false,
+  }) {
+    return showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: '关闭',
+      barrierColor: const Color(0x66000000),
+      transitionDuration: const Duration(milliseconds: 120),
+      pageBuilder: (dialogContext, animation, secondaryAnimation) {
+        void popSheet() => Navigator.of(dialogContext).pop();
+        final rows = rowsBuilder(popSheet);
+        final count = showCount
+            ? rows.where((r) => r.sectionTitle == null).length
+            : null;
+        return Center(
+          child: PlayerMenuSheet(
+            title: title,
+            countText: count == null ? null : '$count 条',
+            rows: rows,
+          ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) =>
+          FadeTransition(opacity: animation, child: child),
+    );
+  }
+
+  /// Subtitle options as [PlayerMenuRow]s (关闭 / 自动 / 内嵌 / 外挂 sections),
+  /// shared by the standalone subtitle picker and the "more" menu's submenu.
+  List<PlayerMenuRow> _buildSubtitleMenuRows(
     Tracks tracks,
     SubtitleTrack? currentSub,
-  ) async {
-    _notify();
-    unawaited(_refreshEmbyTrackMap());
-
+    VoidCallback popSheet,
+  ) {
     final emby = widget.embySubtitles;
     final nativeMuxed = _nativeMuxedTracks(tracks, emby);
     final embeddedEmby = uniqueEmbeddedEmbySubtitles(emby);
@@ -1573,91 +1642,75 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     final indexTracks = _embyIndexTracks ?? const {};
     final fallbackTracks = fallbackEmbyIndexTrackMap(tracks, emby);
 
-    await showGeneralDialog<void>(
-      context: context,
-      barrierDismissible: !_subtitleSwitching,
-      barrierLabel: '关闭字幕选择',
-      barrierColor: const Color(0x66000000),
-      transitionDuration: const Duration(milliseconds: 120),
-      pageBuilder: (dialogContext, animation, secondaryAnimation) {
-        void select(Object? value) {
-          if (_subtitleSwitching) return;
-          Navigator.pop(dialogContext);
-          _onSubtitleMenuSelected(value);
-        }
+    void select(Object? value) {
+      if (_subtitleSwitching) return;
+      popSheet();
+      _onSubtitleMenuSelected(value);
+    }
 
-        final baseOptions = <PlayerSubtitleOption>[
-          PlayerSubtitleOption(
-            label: '关闭字幕',
-            selected: currentSub?.id == 'no' &&
-                !_autoSubtitleActive &&
-                _activeEmbySubtitleId == null,
-            onSelected: () => select(SubtitleTrack.no()),
-          ),
-          if (showAuto)
-            PlayerSubtitleOption(
-              label: '自动（内嵌）',
-              selected: _autoSubtitleActive,
-              onSelected: () => select(SubtitleTrack.auto()),
-            ),
-        ];
-        final embeddedOptions = [
-          for (final o in embeddedEmby)
-            () {
-              final native = indexTracks[o.index] ?? fallbackTracks[o.index];
-              return PlayerSubtitleOption(
-                label: embeddedSubtitleMenuLabel(o, native),
-                detail: _embeddedEmbySecondaryLabel(o, native),
-                selected: !_autoSubtitleActive &&
-                    _isEmbySubtitleActive(o, currentSub),
-                onSelected: () => select(o),
-              );
-            }(),
-        ];
-        final nativeOptions = [
-          for (final t in nativeMuxed)
-            PlayerSubtitleOption(
-              label: _subtitleMenuLabel(t),
-              selected: currentSub?.id == t.id &&
-                  _activeEmbySubtitleId == null &&
-                  !_autoSubtitleActive,
-              onSelected: () => select(t),
-            ),
-        ];
-        final externalOptions = [
-          for (final o in externalEmby)
-            PlayerSubtitleOption(
-              label: o.label,
-              selected:
-                  !_autoSubtitleActive && _isEmbySubtitleActive(o, currentSub),
-              onSelected: () => select(o),
-            ),
-        ];
+    final rows = <PlayerMenuRow>[
+      PlayerMenuRow(
+        label: '关闭字幕',
+        selected: currentSub?.id == 'no' &&
+            !_autoSubtitleActive &&
+            _activeEmbySubtitleId == null,
+        onTap: () => select(SubtitleTrack.no()),
+      ),
+      if (showAuto)
+        PlayerMenuRow(
+          label: '自动（内嵌）',
+          selected: _autoSubtitleActive,
+          onTap: () => select(SubtitleTrack.auto()),
+        ),
+    ];
 
-        final embedded =
-            embeddedOptions.isNotEmpty ? embeddedOptions : nativeOptions;
-        return Center(
-          child: PlayerSubtitlePanel(
-            switching: _subtitleSwitching,
-            onClose: Navigator.of(dialogContext).pop,
-            sections: [
-              PlayerSubtitleSection(options: baseOptions),
-              if (embedded.isNotEmpty)
-                PlayerSubtitleSection(
-                  title: '内嵌（${embedded.length}）',
-                  options: embedded,
-                ),
-              if (externalOptions.isNotEmpty)
-                PlayerSubtitleSection(
-                  title: '外挂（${externalOptions.length}）',
-                  options: externalOptions,
-                ),
-            ],
-          ),
-        );
-      },
-      transitionBuilder: (context, animation, secondaryAnimation, child) =>
-          FadeTransition(opacity: animation, child: child),
+    if (embeddedEmby.isNotEmpty) {
+      rows.add(PlayerMenuRow(sectionTitle: '内嵌（${embeddedEmby.length}）'));
+      for (final o in embeddedEmby) {
+        final native = indexTracks[o.index] ?? fallbackTracks[o.index];
+        rows.add(PlayerMenuRow(
+          label: embeddedSubtitleMenuLabel(o, native),
+          value: _embeddedEmbySecondaryLabel(o, native),
+          selected: !_autoSubtitleActive && _isEmbySubtitleActive(o, currentSub),
+          onTap: () => select(o),
+        ));
+      }
+    } else {
+      for (final t in nativeMuxed) {
+        rows.add(PlayerMenuRow(
+          label: _subtitleMenuLabel(t),
+          selected: currentSub?.id == t.id &&
+              _activeEmbySubtitleId == null &&
+              !_autoSubtitleActive,
+          onTap: () => select(t),
+        ));
+      }
+    }
+
+    if (externalEmby.isNotEmpty) {
+      rows.add(PlayerMenuRow(sectionTitle: '外挂（${externalEmby.length}）'));
+      for (final o in externalEmby) {
+        rows.add(PlayerMenuRow(
+          label: o.label,
+          selected: !_autoSubtitleActive && _isEmbySubtitleActive(o, currentSub),
+          onTap: () => select(o),
+        ));
+      }
+    }
+    return rows;
+  }
+
+  Future<void> _showSubtitlePicker(
+    Tracks tracks,
+    SubtitleTrack? currentSub,
+  ) {
+    _notify();
+    unawaited(_refreshEmbyTrackMap());
+    return _showPlayerMenuSheet(
+      title: '字幕',
+      showCount: true,
+      rowsBuilder: (popSheet) =>
+          _buildSubtitleMenuRows(tracks, currentSub, popSheet),
     );
   }
 
@@ -1784,43 +1837,58 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
       ]);
     }
 
-    // ── Portrait: compact with "more" menu ──
-    return Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-      Expanded(
-        child: Align(
-          alignment: Alignment.center,
-          child: FittedBox(
+    // ── Portrait: play button exactly centered, side actions on the right ──
+    return SizedBox(
+      height: _hitSize,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Centered 3-button transport — the play button sits on the true
+          // horizontal center of the screen regardless of the right-side
+          // actions (选集 / 全屏 / 更多).
+          FittedBox(
             fit: BoxFit.scaleDown,
-            child: transportGroup(),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              _compactIconBtn(Icons.replay_10_rounded, '后退 10 秒', _foreground,
+                  () => _seekRelative(-10)),
+              _spacer(_btnSpacing),
+              _playButton(playFill, playOn, playing),
+              _spacer(_btnSpacing),
+              _compactIconBtn(Icons.forward_10_rounded, '前进 10 秒', _foreground,
+                  () => _seekRelative(10)),
+            ]),
           ),
-        ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              if (widget.showEpisodeControls && widget.onToggleEpisodeList != null)
+                _compactIconBtn(
+                  widget.episodeListOpen
+                      ? Icons.playlist_play_rounded
+                      : Icons.playlist_play_outlined,
+                  '选集',
+                  widget.episodeListOpen ? menuAccent : _foreground,
+                  _deferEpisodeListToggle,
+                ),
+              if (widget.onToggleFullScreen != null)
+                _compactIconBtn(
+                  widget.isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                  widget.isFullScreen ? '退出全屏' : '全屏',
+                  _foreground,
+                  () {
+                    _notify();
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (context.mounted) widget.onToggleFullScreen!();
+                    });
+                  },
+                ),
+              _buildCompactMoreButton(
+                  context, menuAccent, tracks, currentSub, currentAudio, rate),
+            ]),
+          ),
+        ],
       ),
-      if (widget.showEpisodeControls && widget.onToggleEpisodeList != null)
-        _compactIconBtn(
-          widget.episodeListOpen
-              ? Icons.playlist_play_rounded
-              : Icons.playlist_play_outlined,
-          '选集',
-          widget.episodeListOpen ? menuAccent : _foreground,
-          () {
-            _deferEpisodeListToggle();
-          },
-        ),
-      if (widget.onToggleFullScreen != null)
-        _compactIconBtn(
-          widget.isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
-          widget.isFullScreen ? '退出全屏' : '全屏',
-          _foreground,
-          () {
-            _notify();
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (context.mounted) widget.onToggleFullScreen!();
-            });
-          },
-        ),
-      _buildCompactMoreButton(
-          context, menuAccent, tracks, currentSub, currentAudio, rate),
-    ]);
+    );
   }
 
   // ── Compact helpers ──
