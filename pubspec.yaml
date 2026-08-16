@@ -1,7 +1,7 @@
 name: media_client
 description: Cross-platform self-hosted media client (Flutter).
 publish_to: "none"
-version: 1.0.0+3
+version: 1.0.1+4
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
