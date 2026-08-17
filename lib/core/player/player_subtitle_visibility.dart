@@ -221,10 +221,13 @@ extension PlayerSubtitleVisibility on Player {
     // Always deselect the currently-active muxed `sid`. Otherwise switching
     // from an embedded (muxed) subtitle to an external `sub-add` would leave
     // the embedded track selected and render both at the same time (multiple
-    // subtitle lines on screen). Writing `sid=no` also drives media_kit's
-    // track state, unmounting the Flutter text overlay if one is mounted.
+    // subtitle lines on screen). Use media_kit's setter so its track and text
+    // state are also reset, unmounting the Flutter text overlay immediately.
     try {
-      await platform.setProperty('sid', 'no', waitForInitialization: false);
+      await platform.setSubtitleTrack(
+        SubtitleTrack.no(),
+        synchronized: false,
+      );
     } catch (_) {}
     invalidateMpvSidIndexCache(this);
     await Future<void>.delayed(const Duration(milliseconds: 32));

@@ -35,6 +35,14 @@ class _RecordingNativePlayer extends NativePlayer {
   }
 
   @override
+  Future<void> setSubtitleTrack(
+    SubtitleTrack track, {
+    bool synchronized = true,
+  }) async {
+    calls.add('setSubtitleTrack:${track.id}');
+  }
+
+  @override
   Future<void> command(
     List<String> command, {
     bool waitForInitialization = true,
@@ -71,5 +79,19 @@ void main() {
             call.startsWith('set:time-pos=') || call == 'command:set sid 5')
         .toList();
     expect(relevant, ['set:time-pos=10.001000', 'command:set sid 5']);
+  });
+
+  test('turning subtitles off resets media_kit subtitle state', () async {
+    MediaKit.ensureInitialized(
+      libmpv: p.join(Directory.current.path, 'build', 'libmpv', 'libmpv-2.dll'),
+    );
+    final platform = _RecordingNativePlayer();
+    final player = Player(platformPlayer: platform);
+    addTearDown(player.dispose);
+
+    await player.activateSubtitleTrack(SubtitleTrack.no(), reason: 'regression');
+
+    expect(platform.calls, contains('setSubtitleTrack:no'));
+    expect(platform.calls.where((call) => call == 'command:set sid no'), hasLength(1));
   });
 }
