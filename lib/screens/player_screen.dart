@@ -118,6 +118,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// triggered by mpv spurious "completed" events during seeks.
   DateTime _lastSeekAt = DateTime.now();
 
+  /// Last user-requested seek target. mpv can briefly report the SeekHead EOF
+  /// position before settling at the requested target, so progress reporting
+  /// needs the intended target to reject that transient jump.
+  Duration? _lastUserSeekTarget;
+  DateTime? _lastUserSeekAt;
+
   /// Deadline until which a near-end "completion" is treated as the spurious
   /// EOF that follows a subtitle switch on a strm-over-CDN MKV, while the
   /// verified recovery is still running. Null when playback is healthy.
@@ -374,6 +380,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final elapsed = DateTime.now().difference(started);
     final resumeTarget = _resumeTargetForGuard;
 
+    final userSeekTarget = _lastUserSeekTarget;
+    final userSeekAt = _lastUserSeekAt;
+    if (userSeekTarget != null &&
+        userSeekAt != null &&
+        DateTime.now().difference(userSeekAt) <= const Duration(seconds: 15) &&
+        (pos - userSeekTarget).abs() <= const Duration(seconds: 5)) {
+      _legitimatePositionSeen = true;
+      AppLog.instance.d(
+        'Player',
+        'legitimate position observed after user seek '
+        '(pos=${pos.inSeconds}s target=${userSeekTarget.inSeconds}s) '
+        '- bogus guard disarmed',
+      );
+      return false;
+    }
+
     // A position near the resume target (±60s) is legitimate — mpv
     // legitimately jumps there via `--start`. Once observed, all future
     // positions are trusted and the guard is disarmed.
@@ -393,9 +415,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // A position that is non-trivial, within the playable range, and consistent
     // with elapsed wall-clock time (at up to 2x speed) is legitimate. Once
     // observed, all future positions are trusted and the guard is disarmed.
-    // The pos > 500ms threshold avoids mistaking the transient position=0 from
-    // the guard's own seek(0) for legitimate playback.
-    if (pos > const Duration(milliseconds: 500) &&
+    // The 2s threshold avoids mistaking the startup transient and the
+    // guard's own seek(0) for confirmed real playback.
+    if (pos >= const Duration(seconds: 2) &&
         (dur <= const Duration(seconds: 30) || pos < dur * 0.85) &&
         pos <=
             Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000)) {
@@ -602,6 +624,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     });
   }
 
+  Future<void> _seekTo(Duration target) async {
+    _lastSeekAt = DateTime.now();
+    _lastUserSeekTarget = target;
+    _lastUserSeekAt = DateTime.now();
+    _gestureSeekPreview.value = 0;
+    _onSeekAfterPlaybackStopped();
+    await _player.seek(target);
+    _rearmStallDetectorAfterSeek();
+  }
+
   /// Recovery for a playback stall: re-opens the stream at the current
   /// position (0 for fresh playback). Resets the bootstrap state and re-runs
   /// the full bootstrap flow, which re-resolves the CDN URL and re-opens
@@ -660,6 +692,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _playbackReportedStopped = false;
     _bogusPositionCorrected = false;
     _legitimatePositionSeen = false;
+    _lastUserSeekTarget = null;
+    _lastUserSeekAt = null;
     _resumeTargetForGuard = null;
     _networkRecoveryAttempts = 0;
     // Invalidate any in-flight subtitle-switch EOF recovery (re-bootstrap is
@@ -1315,6 +1349,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _playbackStartedAt = DateTime.now();
       _bogusPositionCorrected = false;
       _legitimatePositionSeen = false;
+      _lastUserSeekTarget = null;
+      _lastUserSeekAt = null;
       _installPositionGuard();
       _pendingSubtitlePb = pb;
       span.stage('play_called');
@@ -3372,12 +3408,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                             itemId: widget.itemId,
                             embySubtitles: _info?.subtitles ?? const [],
                             onUserInteraction: _onUserInteraction,
-                            onSeek: () {
-                              _lastSeekAt = DateTime.now();
-                              _gestureSeekPreview.value = 0;
-                              _onSeekAfterPlaybackStopped();
-                              _rearmStallDetectorAfterSeek();
-                            },
+                            onSeekTo: _seekTo,
                             volumeShowToken: _volumeShowToken,
                             gestureSeekPreviewSeconds:
                                 isAndroidMobileUi ? _gestureSeekPreview : null,

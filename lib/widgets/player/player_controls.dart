@@ -34,6 +34,7 @@ class PlayerControls extends ConsumerStatefulWidget {
     this.embySubtitles = const [],
     this.onUserInteraction,
     this.onSeek,
+    this.onSeekTo,
     this.volumeShowToken,
     this.gestureSeekPreviewSeconds,
     this.isFullScreen = false,
@@ -53,6 +54,7 @@ class PlayerControls extends ConsumerStatefulWidget {
   final List<EmbySubtitleOption> embySubtitles;
   final VoidCallback? onUserInteraction;
   final VoidCallback? onSeek;
+  final Future<void> Function(Duration target)? onSeekTo;
   final ValueNotifier<int>? volumeShowToken;
 
   /// Non-zero while the user scrubs the video via horizontal gesture preview.
@@ -516,15 +518,24 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
   // ── Seek / Volume actions ──
 
-  void _seekRelative(int seconds) {
+  void _requestSeek(Duration target) {
     _notify();
+    final onSeekTo = widget.onSeekTo;
+    if (onSeekTo != null) {
+      unawaited(onSeekTo(target));
+      return;
+    }
     widget.onSeek?.call();
+    _player.seek(target);
+  }
+
+  void _seekRelative(int seconds) {
     final cur = _player.state.position;
     final dur = _player.state.duration;
     var next = cur + Duration(seconds: seconds);
     if (next < Duration.zero) next = Duration.zero;
     if (next > dur) next = dur;
-    _player.seek(next);
+    _requestSeek(next);
   }
 
   Future<void> _setVolume(double v, {bool notifyInteraction = true}) async {
@@ -2687,8 +2698,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                           setState(() => _timelineDragValue = null);
                           if (maxMs <= 1) return;
                           _notify();
-                          widget.onSeek?.call();
-                          _player.seek(
+                          _requestSeek(
                               Duration(milliseconds: (v * maxMs).round()));
                         }
                       },
@@ -2700,11 +2710,10 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                       onTapDown: (d) {
                         _notify();
                         if (maxMs <= 1) return;
-                        widget.onSeek?.call();
-                        final x = d.localPosition.dx;
-                        _player.seek(Duration(
-                            milliseconds:
-                                ((x / w) * maxMs).round().clamp(0, maxMs)));
+                          final x = d.localPosition.dx;
+                          _requestSeek(Duration(
+                              milliseconds:
+                                  ((x / w) * maxMs).round().clamp(0, maxMs)));
                       },
                       child: const SizedBox.expand(),
                     ),
