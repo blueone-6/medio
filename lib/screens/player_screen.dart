@@ -3421,6 +3421,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                             embySubtitles: _info?.subtitles ?? const [],
                             onUserInteraction: _onUserInteraction,
                             onSeekTo: _seekTo,
+                            effectivePosition: _effectivePlaybackPosition,
                             volumeShowToken: _volumeShowToken,
                             gestureSeekPreviewSeconds:
                                 isAndroidMobileUi ? _gestureSeekPreview : null,

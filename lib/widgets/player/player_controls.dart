@@ -35,6 +35,7 @@ class PlayerControls extends ConsumerStatefulWidget {
     this.onUserInteraction,
     this.onSeek,
     this.onSeekTo,
+    this.effectivePosition,
     this.volumeShowToken,
     this.gestureSeekPreviewSeconds,
     this.isFullScreen = false,
@@ -55,6 +56,7 @@ class PlayerControls extends ConsumerStatefulWidget {
   final VoidCallback? onUserInteraction;
   final VoidCallback? onSeek;
   final Future<void> Function(Duration target)? onSeekTo;
+  final Duration? Function()? effectivePosition;
   final ValueNotifier<int>? volumeShowToken;
 
   /// Non-zero while the user scrubs the video via horizontal gesture preview.
@@ -2475,7 +2477,11 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                 child: StreamBuilder<void>(
                   stream: _playerStateStream,
                   builder: (context, _) {
-                    final pos = _timelinePosition(_player.state.position);
+                    final positionProvider = widget.effectivePosition;
+                    final rawPos = _player.state.position;
+                    final safePos =
+                        positionProvider == null ? rawPos : positionProvider();
+                    final pos = _timelinePosition(safePos ?? Duration.zero);
                     final dur = _player.state.duration;
                     // When duration is unknown (0 or negative), show progress
                     // as 0 instead of 1.0 (which would make the bar look full
