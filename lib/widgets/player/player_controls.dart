@@ -77,6 +77,12 @@ class PlayerControls extends ConsumerStatefulWidget {
 class _PlayerControlsState extends ConsumerState<PlayerControls> {
   double? _timelineHoverFraction;
   double? _timelineDragValue;
+  Duration? _pendingSeekTarget;
+  DateTime? _pendingSeekAt;
+  Timer? _pendingSeekTimer;
+
+  static const _pendingSeekWindow = Duration(seconds: 15);
+  static const _pendingSeekTolerance = Duration(seconds: 2);
 
   String? _activeEmbySubtitleId;
   String? _pendingEmbySubtitleId;
@@ -343,6 +349,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     _trackSub?.cancel();
     widget.volumeShowToken?.removeListener(_onVolumeShowToken);
     _volumeHideTimer?.cancel();
+    _pendingSeekTimer?.cancel();
     super.dispose();
   }
 
@@ -520,6 +527,16 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
   void _requestSeek(Duration target) {
     _notify();
+    _pendingSeekTimer?.cancel();
+    _pendingSeekTarget = target;
+    _pendingSeekAt = DateTime.now();
+    _pendingSeekTimer = Timer(_pendingSeekWindow, () {
+      if (!mounted) return;
+      _pendingSeekTarget = null;
+      _pendingSeekAt = null;
+      setState(() {});
+    });
+    if (mounted) setState(() {});
     final onSeekTo = widget.onSeekTo;
     if (onSeekTo != null) {
       unawaited(onSeekTo(target));
@@ -527,6 +544,23 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     }
     widget.onSeek?.call();
     _player.seek(target);
+  }
+
+  Duration _timelinePosition(Duration position) {
+    final target = _pendingSeekTarget;
+    final seekAt = _pendingSeekAt;
+    if (target == null || seekAt == null) return position;
+
+    final age = DateTime.now().difference(seekAt);
+    if (age > _pendingSeekWindow ||
+        (position - target).abs() <= _pendingSeekTolerance) {
+      _pendingSeekTimer?.cancel();
+      _pendingSeekTimer = null;
+      _pendingSeekTarget = null;
+      _pendingSeekAt = null;
+      return position;
+    }
+    return target;
   }
 
   void _seekRelative(int seconds) {
@@ -2441,7 +2475,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                 child: StreamBuilder<void>(
                   stream: _playerStateStream,
                   builder: (context, _) {
-                    final pos = _player.state.position;
+                    final pos = _timelinePosition(_player.state.position);
                     final dur = _player.state.duration;
                     // When duration is unknown (0 or negative), show progress
                     // as 0 instead of 1.0 (which would make the bar look full

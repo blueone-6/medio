@@ -311,7 +311,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _reconnecting = false;
   }
 
-  int? _capturePlaybackPositionTicks() {
+  Duration? _effectivePlaybackPosition() {
     try {
       final pos = _player.state.position;
       if (pos <= Duration.zero) return null;
@@ -323,11 +323,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // otherwise be reported as 100% watched on exit / progress. Fall back to
       // the last confirmed mid-file position.
       final recoverTo = _implausibleEndJumpTarget(pos, _player.state.duration);
-      final effective = recoverTo ?? pos;
-      return (effective.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
+      return recoverTo ?? pos;
     } catch (_) {
       return null;
     }
+  }
+
+  int? _capturePlaybackPositionTicks() {
+    final pos = _effectivePlaybackPosition();
+    if (pos == null) return null;
+    return (pos.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
   }
 
   /// If [pos] is an implausible jump to ≈duration — i.e. the last confirmed
@@ -341,6 +346,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// Requiring a >10s content gap keeps the genuine end-of-movie case (last
   /// confirmed position within seconds of the end) from being misread.
   Duration? _implausibleEndJumpTarget(Duration pos, Duration dur) {
+    final userSeekTarget = _lastUserSeekTarget;
+    final userSeekAt = _lastUserSeekAt;
+    if (userSeekTarget != null &&
+        userSeekAt != null &&
+        DateTime.now().difference(userSeekAt) <= const Duration(seconds: 15) &&
+        (pos - userSeekTarget).abs() <= const Duration(seconds: 5)) {
+      return null;
+    }
+
     final confirmedPos = _lastConfirmedPosition;
     final confirmedAt = _lastConfirmedPositionAt;
     if (confirmedPos == null || confirmedAt == null) return null;
@@ -2084,9 +2098,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Future<void> _reportProgressOnce(EmbyPlaybackInfo i, EmbyService emby) async {
     if (_playbackReportedStopped) return;
-    final pos = _player.state.position;
     // Cancel stall detector once playback is confirmed progressing.
-    if (pos >= _stallThreshold) {
+    final pos = _effectivePlaybackPosition();
+    if (pos != null && pos >= _stallThreshold) {
       _cancelStallDetector();
       // Reset stall recovery counter — playback is healthy now, so a future
       // stall in this session should get a fresh retry budget.
@@ -2094,10 +2108,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         _stallRecoveryAttempts = 0;
       }
     }
-    // Suppress bogus early-playback position (mpv MKV SeekHead artifact) so
-    // Emby doesn't record a near-100% progress for a few seconds of playback.
-    final ticks = _isFreshPlaybackPositionBogus(pos)
-        ? 0
+    final ticks = pos == null
+        ? (_lastReportedPositionTicks ?? 0)
         : (pos.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
     if (_playbackReportedStopped) return;
     await emby.reportProgress(
