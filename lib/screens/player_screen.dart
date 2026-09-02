@@ -207,6 +207,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   static const _maxStallRecoveryAttempts = 2;
   int _stallRecoveryAttempts = 0;
 
+  /// Verifies that a user-requested seek actually landed in mpv. Remote MKV
+  /// sources can silently reject byte-range seeks, after which the UI briefly
+  /// shows the requested target before mpv falls back to the old position.
+  Timer? _userSeekVerificationTimer;
+  static const _userSeekVerificationDelay = Duration(seconds: 5);
+  static const _userSeekVerificationTolerance = Duration(seconds: 2);
+
   /// Set when retry/error aborts an in-flight bootstrap.
   bool _bootstrapCancelled = false;
 
@@ -604,7 +611,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // stalls where buffering might not be reported reliably on all
       // platforms, and preserves the behavior from the original one-shot
       // detector.
-      if (!_player.state.buffering && pos >= _stallThreshold) {
+      if (!_player.state.playing &&
+          !_player.state.buffering &&
+          pos >= _stallThreshold) {
         // Likely a user pause — re-arm but don't trigger recovery.
         _installStallDetector();
         return;
@@ -626,6 +635,29 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _stallCheckTimer = null;
   }
 
+  void _cancelUserSeekVerification() {
+    _userSeekVerificationTimer?.cancel();
+    _userSeekVerificationTimer = null;
+  }
+
+  void _scheduleUserSeekVerification(Duration target) {
+    _cancelUserSeekVerification();
+    _userSeekVerificationTimer = Timer(_userSeekVerificationDelay, () {
+      if (!mounted || _leavingPlayer || _error != null) return;
+      _userSeekVerificationTimer = null;
+
+      final pos = _effectivePlaybackPosition() ?? _player.state.position;
+      if ((pos - target).abs() <= _userSeekVerificationTolerance) return;
+
+      AppLog.instance.w(
+        'Player',
+        'user seek did not land (pos=${pos.inSeconds}s '
+            'target=${target.inSeconds}s) - re-opening at target',
+      );
+      unawaited(_handlePlaybackStall(resumeAt: target));
+    });
+  }
+
   /// Re-arm the stall detector after a seek. A short delay gives mpv time
   /// to buffer the new position before we start checking for stalls —
   /// otherwise the brief post-seek buffering (buffering=true, position
@@ -639,6 +671,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Future<void> _seekTo(Duration target) async {
+    _cancelUserSeekVerification();
     _lastSeekAt = DateTime.now();
     _lastUserSeekTarget = target;
     _lastUserSeekAt = DateTime.now();
@@ -646,13 +679,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _onSeekAfterPlaybackStopped();
     await _player.seek(target);
     _rearmStallDetectorAfterSeek();
+    _scheduleUserSeekVerification(target);
   }
 
   /// Recovery for a playback stall: re-opens the stream at the current
   /// position (0 for fresh playback). Resets the bootstrap state and re-runs
   /// the full bootstrap flow, which re-resolves the CDN URL and re-opens
   /// the stream with fresh options.
-  Future<void> _handlePlaybackStall() async {
+  Future<void> _handlePlaybackStall({Duration? resumeAt}) async {
     if (!mounted || _leavingPlayer) return;
     final pb = _info;
     if (pb == null) return;
@@ -671,6 +705,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       return;
     }
     _stallRecoveryAttempts++;
+    _cancelUserSeekVerification();
+
+    final recoveryPosition = resumeAt ?? _effectivePlaybackPosition();
+    _resumeTicksOverride = recoveryPosition == null
+        ? null
+        : (recoveryPosition.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
 
     _cancelStallDetector();
     _cancelProgressReporting();
@@ -2207,6 +2247,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _leavePlayer() {
     if (_leavingPlayer) return;
     _leavingPlayer = true;
+    _cancelUserSeekVerification();
     _cancelNetworkRecovery();
     _cancelBootstrapInProgress(firstFrameVia: 'leave_player');
     _nextEpCountdownTimer?.cancel();
@@ -2703,6 +2744,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   @override
   void dispose() {
+    _cancelUserSeekVerification();
     _cancelNetworkRecovery();
     _cancelAndroidResumeGuard?.call();
     _cancelAndroidResumeGuard = null;
