@@ -179,6 +179,7 @@ extension PlayerSubtitleVisibility on Player {
     var removed = 0;
 
     final externalIds = await mpvExternalSubtitleIds(this);
+    final hadExternalIds = externalIds.isNotEmpty;
     for (final id in externalIds) {
       try {
         await platform.command(['sub-remove', id], waitForInitialization: false);
@@ -212,6 +213,16 @@ extension PlayerSubtitleVisibility on Player {
           } catch (_) {}
         }
       }
+    }
+
+    if (hadExternalIds && removed == 0) {
+      // Every sub-remove failed — external tracks likely still linger and can
+      // double-render with the next selection. Makes residue cases debuggable.
+      AppLog.instance.w(
+        'Subtitle',
+        'clearExternalSubtitles: ${externalIds.length} external track(s) '
+            'known but none removed',
+      );
     }
 
     if (removed > 0) {

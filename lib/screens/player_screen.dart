@@ -14,6 +14,8 @@ import '../core/tv/tv_remote_actions.dart';
 import '../core/logging/app_log.dart';
 import '../core/logging/perf.dart';
 import '../core/player/apply_emby_subtitle.dart';
+import '../core/player/bogus_position_guard.dart';
+import '../core/player/seek_step.dart';
 import '../core/player/player_subtitle_visibility.dart';
 import '../core/player/select_embedded_subtitle.dart';
 import '../core/player/subtitle_switch_queue.dart';
@@ -54,10 +56,15 @@ class PlayerScreen extends ConsumerStatefulWidget {
     super.key,
     required this.itemId,
     this.hintPositionTicks,
+    this.hintPlayedPercentage,
   });
 
   final String itemId;
   final int? hintPositionTicks;
+
+  /// Route resume hint (0–100) from item UserData; used with [hintPositionTicks]
+  /// to decide whether a resume position is still worth seeking to.
+  final double? hintPlayedPercentage;
 
   @override
   ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
@@ -214,6 +221,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   static const _userSeekVerificationDelay = Duration(seconds: 5);
   static const _userSeekVerificationTolerance = Duration(seconds: 2);
 
+  /// While mpv is still buffering at verification time (cold CDN cue fetches
+  /// can exceed the base delay), the check is extended instead of triggering a
+  /// full stream re-open — the latter is slower than letting mpv finish.
+  int _userSeekVerificationExtensions = 0;
+  static const _maxUserSeekVerificationExtensions = 2;
+
   /// Set when retry/error aborts an in-flight bootstrap.
   bool _bootstrapCancelled = false;
 
@@ -355,22 +368,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Duration? _implausibleEndJumpTarget(Duration pos, Duration dur) {
     final userSeekTarget = _lastUserSeekTarget;
     final userSeekAt = _lastUserSeekAt;
-    if (userSeekTarget != null &&
-        userSeekAt != null &&
-        DateTime.now().difference(userSeekAt) <= const Duration(seconds: 15) &&
-        (pos - userSeekTarget).abs() <= const Duration(seconds: 5)) {
-      return null;
-    }
-
-    final confirmedPos = _lastConfirmedPosition;
-    final confirmedAt = _lastConfirmedPositionAt;
-    if (confirmedPos == null || confirmedAt == null) return null;
-    if (isPlaybackNearEnd(confirmedPos, dur)) return null;
-    final contentGap = pos - confirmedPos;
-    if (contentGap <= const Duration(seconds: 10)) return null;
-    final wallGap = DateTime.now().difference(confirmedAt);
-    if (wallGap >= contentGap - const Duration(seconds: 3)) return null;
-    return confirmedPos;
+    return implausibleEndJumpTarget(
+      pos: pos,
+      duration: dur,
+      confirmedPos: _lastConfirmedPosition,
+      confirmedAge: _lastConfirmedPositionAt == null
+          ? null
+          : DateTime.now().difference(_lastConfirmedPositionAt!),
+      userSeekTarget: userSeekTarget,
+      userSeekAge: userSeekAt == null
+          ? null
+          : DateTime.now().difference(userSeekAt),
+    );
   }
 
   /// Detects the bogus "position ≈ duration" state on fresh **and** resume
@@ -392,102 +401,35 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   ///    it's a resume session and the position is near the resume target.
   /// 2. Duration unknown: a position beyond what could plausibly have been
   ///    played in the elapsed wall-clock time (at ~2x speed) is bogus.
+  /// Thin wrapper over [classifyFreshPlaybackPosition]: keeps the
+  /// `_legitimatePositionSeen` latch and its logging as side effects here so
+  /// the decision core stays a pure function (see bogus_position_guard.dart).
   bool _isFreshPlaybackPositionBogus(Duration pos) {
     if (_legitimatePositionSeen) return false;
     final started = _playbackStartedAt;
     if (started == null) return false;
 
-    final dur = _player.state.duration;
-    final elapsed = DateTime.now().difference(started);
-    final resumeTarget = _resumeTargetForGuard;
-
-    final userSeekTarget = _lastUserSeekTarget;
-    final userSeekAt = _lastUserSeekAt;
-    if (userSeekTarget != null &&
-        userSeekAt != null &&
-        DateTime.now().difference(userSeekAt) <= const Duration(seconds: 15) &&
-        (pos - userSeekTarget).abs() <= const Duration(seconds: 5)) {
+    final now = DateTime.now();
+    final verdict = classifyFreshPlaybackPosition(
+      pos: pos,
+      duration: _player.state.duration,
+      elapsed: now.difference(started),
+      resumeTarget: _resumeTargetForGuard,
+      userSeekTarget: _lastUserSeekTarget,
+      userSeekAge: _lastUserSeekAt == null
+          ? null
+          : now.difference(_lastUserSeekAt!),
+    );
+    if (verdict == FreshPositionVerdict.legitimate) {
       _legitimatePositionSeen = true;
       AppLog.instance.d(
         'Player',
-        'legitimate position observed after user seek '
-        '(pos=${pos.inSeconds}s target=${userSeekTarget.inSeconds}s) '
-        '- bogus guard disarmed',
-      );
-      return false;
-    }
-
-    // A position near the resume target (±60s) is legitimate — mpv
-    // legitimately jumps there via `--start`. Once observed, all future
-    // positions are trusted and the guard is disarmed.
-    if (resumeTarget != null &&
-        pos > const Duration(milliseconds: 500) &&
-        (pos - resumeTarget).abs() <= const Duration(seconds: 60)) {
-      _legitimatePositionSeen = true;
-      AppLog.instance.d(
-        'Player',
-        'legitimate position observed (pos=${pos.inSeconds}s '
-            'elapsed=${elapsed.inSeconds}s resume=${resumeTarget.inSeconds}s) '
+        'legitimate position observed (pos=${pos.inSeconds}s) '
             '- bogus guard disarmed',
       );
       return false;
     }
-
-    // A position that is non-trivial, within the playable range, and consistent
-    // with elapsed wall-clock time (at up to 2x speed) is legitimate. Once
-    // observed, all future positions are trusted and the guard is disarmed.
-    // The 2s threshold avoids mistaking the startup transient and the
-    // guard's own seek(0) for confirmed real playback.
-    if (pos >= const Duration(seconds: 2) &&
-        (dur <= const Duration(seconds: 30) || pos < dur * 0.85) &&
-        pos <=
-            Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000)) {
-      _legitimatePositionSeen = true;
-      AppLog.instance.d(
-        'Player',
-        'legitimate position observed (pos=${pos.inSeconds}s '
-            'elapsed=${elapsed.inSeconds}s) - bogus guard disarmed',
-      );
-      return false;
-    }
-
-    // Position is suspicious - check if it matches the SeekHead artifact.
-    // Case 1: Duration known - check both "near the end" and "beyond
-    // wall-clock plausibility". A position can be bogus even if it's not
-    // near the end — mpv may report a mid-file position from the SeekHead
-    // read that is far beyond what could have been played in the elapsed
-    // wall-clock time.
-    if (dur > const Duration(seconds: 30)) {
-      // Sub-case 1a: position near the end (>= 90% of duration) is bogus
-      // unless it's a resume session near the resume target.
-      if (pos >= dur * 0.9) {
-        if (resumeTarget != null &&
-            (pos - resumeTarget).abs() <= const Duration(seconds: 60)) {
-          return false;
-        }
-        return true;
-      }
-      // Sub-case 1b: position is within the playable range but far beyond
-      // what could have been played in the elapsed wall-clock time (at 2x
-      // speed). This catches mid-file bogus positions from the SeekHead
-      // artifact that are < 90% of duration but still impossible.
-      if (pos >
-          Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000)) {
-        return true;
-      }
-      return false;
-    }
-    // Case 2: Duration unknown (0 or not yet determined) - a position beyond
-    // what could plausibly have been played in the elapsed wall-clock time is
-    // bogus. At 2x rate, T seconds of wall-clock produces at most ~2T+3s of
-    // content (3s buffer for startup jitter).
-    // For resume sessions, allow positions near the resume target.
-    if (resumeTarget != null &&
-        (pos - resumeTarget).abs() <= const Duration(seconds: 60)) {
-      return false;
-    }
-    return pos >
-        Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000);
+    return verdict == FreshPositionVerdict.bogus;
   }
 
   /// Installs a one-shot watcher that force-seeks to the resume target (or 0
@@ -642,6 +584,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _scheduleUserSeekVerification(Duration target) {
     _cancelUserSeekVerification();
+    _userSeekVerificationExtensions = 0;
     _userSeekVerificationTimer = Timer(_userSeekVerificationDelay, () {
       if (!mounted || _leavingPlayer || _error != null) return;
       _userSeekVerificationTimer = null;
@@ -649,13 +592,38 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       final pos = _effectivePlaybackPosition() ?? _player.state.position;
       if ((pos - target).abs() <= _userSeekVerificationTolerance) return;
 
-      AppLog.instance.w(
-        'Player',
-        'user seek did not land (pos=${pos.inSeconds}s '
-            'target=${target.inSeconds}s) - re-opening at target',
-      );
-      unawaited(_handlePlaybackStall(resumeAt: target));
+      // Still buffering (cold CDN byte-range fetch for the seek target) —
+      // give mpv more time instead of the disruptive re-open below.
+      if (_player.state.buffering &&
+          _userSeekVerificationExtensions < _maxUserSeekVerificationExtensions) {
+        _userSeekVerificationExtensions++;
+        AppLog.instance.d(
+          'Player',
+          'user seek still buffering '
+          '(pos=${pos.inSeconds}s target=${target.inSeconds}s, '
+          'extension=$_userSeekVerificationExtensions) - waiting',
+        );
+        _userSeekVerificationTimer = Timer(_userSeekVerificationDelay, () {
+          if (!mounted || _leavingPlayer || _error != null) return;
+          _userSeekVerificationTimer = null;
+          _verifyUserSeekLanded(target);
+        });
+        return;
+      }
+      _verifyUserSeekLanded(target);
     });
+  }
+
+  void _verifyUserSeekLanded(Duration target) {
+    final pos = _effectivePlaybackPosition() ?? _player.state.position;
+    if ((pos - target).abs() <= _userSeekVerificationTolerance) return;
+
+    AppLog.instance.w(
+      'Player',
+      'user seek did not land (pos=${pos.inSeconds}s '
+          'target=${target.inSeconds}s) - re-opening at target',
+    );
+    unawaited(_handlePlaybackStall(resumeAt: target));
   }
 
   /// Re-arm the stall detector after a seek. A short delay gives mpv time
@@ -670,13 +638,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     });
   }
 
+  void _markUserSeek(Duration target) {
+    final now = DateTime.now();
+    _lastSeekAt = now;
+    _lastUserSeekTarget = target;
+    _lastUserSeekAt = now;
+  }
+
   Future<void> _seekTo(Duration target) async {
     _cancelUserSeekVerification();
-    _lastSeekAt = DateTime.now();
-    _lastUserSeekTarget = target;
-    _lastUserSeekAt = DateTime.now();
+    _markUserSeek(target);
     _gestureSeekPreview.value = 0;
-    _onSeekAfterPlaybackStopped();
+    _onSeekAfterPlaybackStopped(target);
     await _player.seek(target);
     _rearmStallDetectorAfterSeek();
     _scheduleUserSeekVerification(target);
@@ -941,7 +914,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         var resumeAt = ticks != null && ticks > 0
             ? Duration(microseconds: ticks ~/ 10)
             : _player.state.position;
-        resumeAt = _clampResumePosition(resumeAt, _info!.runTimeTicks);
+        resumeAt = _clampResumePosition(resumeAt, _effectiveRunTimeTicks);
         if (resumeAt <= Duration.zero) {
           await _failPlayback(raw);
           return;
@@ -1247,7 +1220,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   Future<void> _bootstrapWithSpan(PerfSpan span) async {
     try {
-      AppLog.instance.w('Player', '>>> BUILD MARKER: stall-fix-v3 <<<');
       _lastSeekAt = DateTime.now();
       _subtitleRefetchCancelled = false;
       final emby = ref.read(embyServiceProvider);
@@ -1323,10 +1295,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           ? serverBase.substring(0, serverBase.length - 1)
           : serverBase;
       final strm = pb.strmViaEmbyStream;
+      // Cold strm MediaSources resolve lazily server-side: the first
+      // PlaybackInfo may carry no RunTimeTicks while the item metadata does.
+      // Fall back so resume filters (watched %, <30s tail) still apply.
+      final effectiveRunTimeTicks = pb.runTimeTicks ?? item.runTimeTicks;
       final resumeAt = resumePlaybackPosition(
         playbackPositionTicks:
             startTimeTicks > 0 ? startTimeTicks : widget.hintPositionTicks,
-        runTimeTicks: pb.runTimeTicks,
+        runTimeTicks: effectiveRunTimeTicks,
+        playedPercentage: widget.hintPlayedPercentage,
       );
       // Track whether this is a resume session so the position guard only
       // fires for fresh playback (where position ≈ duration is bogus).
@@ -1878,32 +1855,45 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     );
   }
 
-  /// Upper bound for blocking on the parallel external CDN resolve before
-  /// falling back to opening the Emby `/stream` URL (mpv follows the 307).
+  /// Strm playback: prefer the pre-resolved CDN URL (resolved in parallel with
+  /// surface setup) so mpv issues every seek/range request directly against the
+  /// CDN. Falls back to the Emby `/stream` URL (mpv follows the 307 on every
+  /// request) when the resolve fails or yields a non-CDN target.
   ///
-  /// IMPORTANT — do NOT shorten this to "save" mpv_open time. The Emby 307
-  /// fallback is a **much slower** playback path, not an equivalent one: with
-  /// it, every mpv seek/range request (including the resume `--start` seek)
-  /// re-traverses Emby → 307 → CDN, which pushed first_frame from ~1 s to
-  /// 9–12 s in testing (2026-05-29). The direct CDN URL lets mpv issue range
-  /// requests straight to the CDN. So we wait essentially as long as it takes.
-  ///
-  /// Strm: prefer fresh CDN URL at mpv_open (parallel resolve during surface
-  /// wait); on expired CDN clear MP 302 cache and resolve once more; fall back
-  /// to Emby `/stream` 307 when resolve fails, times out, or URL stays expired.
-  ///
-  /// Expired + retry path can add up to ~8s (clear) + 8s (re-resolve) before the
-  /// slower Emby 307 fallback — worse than the old immediate 307 on expired URL.
+  /// The CDN resolve must use the same headers mpv will send
+  /// ([externalCdnPlaybackHttpHeaders]) — 115 signed URLs are UA-bound.
+  /// Mid-session CDN URL expiry is handled by the stall / network-error
+  /// recovery paths, which re-resolve via a fresh bootstrap.
   Future<void> _openStrmPlayback(
     String embyStreamUrl, {
     Future<String>? cdnUrlFuture,
   }) async {
     final emby = _emby;
     if (emby == null) return;
-    const picked = null;
+    String? picked;
+    if (cdnUrlFuture != null) {
+      try {
+        final resolved = await cdnUrlFuture;
+        if (resolved.trim().isNotEmpty &&
+            isExternalCdnPlaybackUrl(resolved.trim())) {
+          picked = resolved.trim();
+        } else {
+          AppLog.instance.w(
+            'Player',
+            'strm CDN resolve returned non-CDN URL '
+            '(${AppLog.redactUrl(resolved)}) - falling back to Emby 307',
+          );
+        }
+      } catch (e) {
+        AppLog.instance.w(
+          'Player',
+          'strm CDN resolve failed - falling back to Emby 307: $e',
+        );
+      }
+    }
     if (!mounted || _bootstrapCancelled) return;
     final openUrl = picked ?? embyStreamUrl;
-    const mode = picked != null ? 'cdn_direct' : 'emby_307';
+    final mode = picked != null ? 'cdn_direct' : 'emby_307';
     final headers = externalCdnPlaybackHttpHeaders();
 
     AppLog.instance.i(
@@ -2010,12 +2000,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
   }
 
+  /// Position used as the base for relative seeks (keyboard arrows, double
+  /// tap, mobile shortcut buttons). Raw [Player.state.position] can briefly
+  /// report the bogus "position ≈ duration" state on cold strm playback —
+  /// using it as a seek base would jump the user to the end of the file.
+  Duration _sanitizedSeekBase() {
+    final pos = _player.state.position;
+    if (!_isFreshPlaybackPositionBogus(pos)) return pos;
+    return _resumeTargetForGuard ?? Duration.zero;
+  }
+
   /// 方向键按下：累加偏移，不启动定时器（由 KeyUpEvent 决定是否延迟提交）。
   void _onArrowDown(int direction, int step) {
     _arrowSeekDelayTimer?.cancel();
     _arrowHoldStart = DateTime.now();
     _arrowHoldDirection = direction;
-    _arrowSeekBasePos ??= _player.state.position;
+    _arrowSeekBasePos ??= _sanitizedSeekBase();
     _arrowAccumulatedSeconds += step * direction;
     _onUserInteraction();
     setState(() {});
@@ -2041,8 +2041,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       var target = base + Duration(seconds: _arrowAccumulatedSeconds);
       if (target < Duration.zero) target = Duration.zero;
       if (target > dur) target = dur;
+      _markUserSeek(target);
+      _onSeekAfterPlaybackStopped(target);
       _player.seek(target);
-      _lastSeekAt = DateTime.now();
       _rearmStallDetectorAfterSeek();
     }
     _arrowHoldStart = null;
@@ -2053,16 +2054,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     setState(() {});
   }
 
-  static int _seekStepForDuration(Duration held) {
-    final ms = held.inMilliseconds;
-    if (ms < 500) return 1;
-    if (ms < 1000) return 5;
-    if (ms < 2000) return 15;
-    if (ms < 4000) return 30;
-    if (ms < 7000) return 60;
-    if (ms < 12000) return 150;
-    return 300;
-  }
+  static int _seekStepForDuration(Duration held) =>
+      keyboardSeekStepForHold(held);
 
   /// 键盘调节音量（delta 为百分比增量，范围 0-100）。
   void _adjustVolume(double delta) {
@@ -2199,9 +2192,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     );
   }
 
+  /// PlaybackInfo RunTimeTicks with item-metadata fallback: cold strm
+  /// MediaSources resolve lazily and may omit RunTimeTicks on first fetch.
+  int? get _effectiveRunTimeTicks =>
+      _info?.runTimeTicks ?? _currentItem?.runTimeTicks;
+
   void _maybeRecordPlayHistory(int positionTicks, int? runTimeTicks) {
-    if (runTimeTicks == null || runTimeTicks <= 0) return;
-    if (positionTicks < runTimeTicks * 0.05) return;
+    final runtime = runTimeTicks ?? _effectiveRunTimeTicks;
+    if (runtime == null || runtime <= 0) return;
+    if (positionTicks < runtime * 0.05) return;
     final item = _currentItem;
     if (item == null) return;
     try {
@@ -2216,14 +2215,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   /// 当视频播放完毕后用户回看（seek back），需要重新上报 PlaybackStarted
   /// 并重启进度定时器，以便 Emby 服务器跟踪新的播放会话。
-  void _onSeekAfterPlaybackStopped() {
+  void _onSeekAfterPlaybackStopped(Duration target) {
     if (!_playbackReportedStopped) return;
     final i = _info;
     final emby = _emby;
     if (i == null || emby == null) return;
     _playbackReportedStopped = false;
-    final pos = _player.state.position;
-    final ticks = (pos.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
+    final ticks = (target.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
     unawaited(emby.reportPlaybackStarted(
       itemId: widget.itemId,
       mediaSourceId: i.mediaSourceId,
@@ -2410,13 +2408,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _seekRelative(int seconds) {
     _gestureSeekPreview.value = 0;
-    _lastSeekAt = DateTime.now();
-    _onSeekAfterPlaybackStopped();
-    final cur = _player.state.position;
+    final cur = _sanitizedSeekBase();
     final dur = _player.state.duration;
     var next = cur + Duration(seconds: seconds);
     if (next < Duration.zero) next = Duration.zero;
     if (next > dur) next = dur;
+    _markUserSeek(next);
+    _onSeekAfterPlaybackStopped(next);
     _player.seek(next);
     _rearmStallDetectorAfterSeek();
   }

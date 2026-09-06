@@ -63,18 +63,6 @@ class EmbyPlaybackInfo {
     );
   }
 
-  /// Preferred text subtitle for mpv (skips PGS; ASS is OK).
-  EmbySubtitleOption? get preferredTextSubtitle {
-    EmbySubtitleOption? pick(EmbySubtitleOption? t) {
-      if (t == null || t.isBitmapSubtitle) return null;
-      return t;
-    }
-
-    final textTracks = subtitles.where((t) => !t.isBitmapSubtitle).toList();
-    return pick(preferredSubtitle) ??
-        (textTracks.isEmpty ? null : pick(textTracks.first));
-  }
-
   /// ExoPlayer TV: skip PGS/特效 default; prefer plain SRT/VTT, else ASS via SRT extract.
   EmbySubtitleOption? get preferredExoTextSubtitle {
     final playable =

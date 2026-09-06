@@ -571,13 +571,15 @@ class EmbyService {
   /// Some servers return a single CDN Location;
   /// server-side strm plugins may return an intermediate `redirect_url` hop —
   /// both are resolved here before mpv open.
+  ///
+  /// Always resolves with the same CDN playback headers mpv will use:
+  /// 115 signed CDN URLs are bound to the User-Agent of the request that
+  /// resolved them, so a URL resolved by Dio with a different UA would be
+  /// rejected (403) when mpv re-requests it.
   Future<String> resolveExternalCdnUrl(String embyStreamUrl) async {
-    final headers = isExternalCdnPlaybackUrl(embyStreamUrl)
-        ? externalCdnPlaybackHttpHeaders()
-        : const <String, String>{};
     final resolved = await resolvePlaybackRedirectChain(
       embyStreamUrl,
-      requestHeaders: headers,
+      requestHeaders: externalCdnPlaybackHttpHeaders(),
     );
     AppLog.instance.i(
       'ExtCdn',
@@ -680,7 +682,8 @@ class EmbyService {
     _dio.options.baseUrl = _embyRoot;
     final body = {
       'UserId': userId,
-      'MaxStreamingBitrate': 140000000,
+      // MaxStreamingBitrate comes from the DeviceProfile (140M on Android,
+      // effectively unlimited on desktop) — do not override it here.
       'StartTimeTicks': startTimeTicks,
       'DeviceProfile': buildEmbyDeviceProfile(android: isAndroidMobileUi),
     };
@@ -1047,7 +1050,18 @@ class EmbyService {
   }
 
   /// In-memory cache for downloaded external subtitle text (URL → content).
+  /// Insertion-ordered so the oldest entry can be evicted once the cap is hit
+  /// (subtitle texts are tens of KB each; unbounded growth leaks memory across
+  /// long browsing sessions).
+  static const _subtitleCacheMaxEntries = 24;
   final Map<String, String> _subtitleCache = {};
+
+  void _cacheSubtitleText(String url, String content) {
+    _subtitleCache[url] = content;
+    while (_subtitleCache.length > _subtitleCacheMaxEntries) {
+      _subtitleCache.remove(_subtitleCache.keys.first);
+    }
+  }
 
   /// Downloads an external subtitle file from the given absolute URL and returns its text content.
   Future<String?> fetchSubtitleText(String url) async {
@@ -1063,7 +1077,7 @@ class EmbyService {
         ),
       );
       if (res.statusCode == 200 && res.data != null && res.data!.isNotEmpty) {
-        _subtitleCache[url] = res.data!;
+        _cacheSubtitleText(url, res.data!);
         AppLog.instance.d('EmbyService', 'fetchSubtitleText ok bytes=${res.data!.length}');
         return res.data;
       }

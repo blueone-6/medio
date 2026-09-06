@@ -566,7 +566,10 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   }
 
   void _seekRelative(int seconds) {
-    final cur = _player.state.position;
+    // Prefer the screen's sanitized position — raw state.position can briefly
+    // report the bogus "position ≈ duration" state on cold strm playback,
+    // which would send relative seeks to the end of the file.
+    final cur = widget.effectivePosition?.call() ?? _player.state.position;
     final dur = _player.state.duration;
     var next = cur + Duration(seconds: seconds);
     if (next < Duration.zero) next = Duration.zero;

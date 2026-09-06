@@ -35,10 +35,15 @@ class TvPlayerScreen extends ConsumerStatefulWidget {
     super.key,
     required this.itemId,
     this.hintPositionTicks,
+    this.hintPlayedPercentage,
   });
 
   final String itemId;
   final int? hintPositionTicks;
+
+  /// Route resume hint (0–100) from item UserData; used with
+  /// [hintPositionTicks] to decide whether a resume position is worth seeking.
+  final double? hintPlayedPercentage;
 
   @override
   ConsumerState<TvPlayerScreen> createState() => _TvPlayerScreenState();
@@ -147,16 +152,56 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
     _settleTimeoutTimer?.cancel();
     _playbackSettled = false;
     _resumeTarget = resumeAt;
+    _settleTimeoutExtensions = 0;
   }
+
+  int _settleTimeoutExtensions = 0;
+
+  /// One re-bootstrap attempt per screen instance — `_resetPlaybackSettle`
+  /// must not clear this, otherwise a persistently dead stream loops forever.
+  bool _settleRebootstrapped = false;
 
   void _installPlaybackSettleWatcher(PerfSpan span) {
     _bootstrapSpan?.end(extraContext: {'settle_via': 'replaced'});
     _bootstrapSpan = span;
     _settleTimeoutTimer?.cancel();
     _settleTimeoutTimer = Timer(const Duration(seconds: 15), () {
-      _onPlaybackSettled('timeout');
+      _onSettleTimeout();
     });
     _trySettlePlayback('install');
+  }
+
+  /// 15 s passed without a settled position. A cold strm (lazy MediaSource
+  /// resolution + CDN first-byte) can legitimately take that long while
+  /// ExoPlayer is still buffering — keep waiting then. But when the player is
+  /// neither playing nor buffering (stream dead / rejected), silently dropping
+  /// the loading mask leaves the user on a black screen with controls; retry
+  /// the bootstrap once instead, and surface an error if it repeats.
+  void _onSettleTimeout() {
+    if (_playbackSettled || !mounted) return;
+    if (_exoState.isBuffering || _exoState.isPlaying) {
+      if (_settleTimeoutExtensions < 3) {
+        _settleTimeoutExtensions++;
+        _settleTimeoutTimer = Timer(const Duration(seconds: 10), _onSettleTimeout);
+        return;
+      }
+    }
+    if (!_settleRebootstrapped && !_exoState.isPlaying &&
+        !_exoState.isBuffering) {
+      _settleRebootstrapped = true;
+      AppLog.instance.w(
+        'TvPlayer',
+        'settle timeout: player idle (not playing/buffering) - re-bootstrapping',
+      );
+      unawaited(_retryPlayback());
+      return;
+    }
+    if (_settleTimeoutExtensions >= 3 && !_exoState.isPlaying) {
+      _onPlaybackSettled('timeout-error');
+      setState(() => _error = '播放长时间无响应，请重试');
+      return;
+    }
+    _onPlaybackSettled('timeout');
   }
 
   void _trySettlePlayback(String reason) {
@@ -218,10 +263,14 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
       _currentItem = item;
       _info = pb;
 
+      // Cold strm MediaSources resolve lazily server-side: the first
+      // PlaybackInfo may carry no RunTimeTicks while the item metadata does.
+      final effectiveRunTimeTicks = pb.runTimeTicks ?? item.runTimeTicks;
       final resumeAt = resumePlaybackPosition(
         playbackPositionTicks:
             startTimeTicks > 0 ? startTimeTicks : widget.hintPositionTicks,
-        runTimeTicks: pb.runTimeTicks,
+        runTimeTicks: effectiveRunTimeTicks,
+        playedPercentage: widget.hintPlayedPercentage,
       );
 
       final openUrl = pb.streamUrl;
@@ -245,10 +294,11 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
       if (subtitle == null &&
           pb.strmViaEmbyStream &&
           pb.subtitles.isEmpty) {
+        // The lazy resolution needs a moment even for the first re-fetch
+        // (the first PlaybackInfo above triggered it server-side) — always
+        // wait before retrying, not only from the second attempt on.
         for (var attempt = 0; attempt < 3 && subtitle == null; attempt++) {
-          if (attempt > 0) {
-            await Future<void>.delayed(const Duration(seconds: 2));
-          }
+          await Future<void>.delayed(const Duration(seconds: 2));
           if (!mounted) return;
           try {
             final freshPb = await emby.getPlaybackInfo(widget.itemId);
@@ -455,9 +505,15 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
     _maybeRecordPlayHistory(ticks, i.runTimeTicks);
   }
 
+  /// PlaybackInfo RunTimeTicks with item-metadata fallback: cold strm
+  /// MediaSources resolve lazily and may omit RunTimeTicks on first fetch.
+  int? get _effectiveRunTimeTicks =>
+      _info?.runTimeTicks ?? _currentItem?.runTimeTicks;
+
   void _maybeRecordPlayHistory(int positionTicks, int? runTimeTicks) {
-    if (runTimeTicks == null || runTimeTicks <= 0) return;
-    if (positionTicks < runTimeTicks * 0.05) return;
+    final runtime = runTimeTicks ?? _effectiveRunTimeTicks;
+    if (runtime == null || runtime <= 0) return;
+    if (positionTicks < runtime * 0.05) return;
     final item = _currentItem;
     if (item == null) return;
     try {

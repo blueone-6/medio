@@ -71,6 +71,45 @@ void main() {
       );
     });
 
+    // Regression: cold strm MediaSources resolve lazily and can omit
+    // RunTimeTicks. Callers must fall back to item-metadata runtime so this
+    // guard still applies; without any runtime the near-end filter cannot
+    // fire (documented behavior, see player bootstrap runtime fallback).
+    test('returns null for near-end position with playedPercentage hint', () {
+      const runtime = 3600 * 10000000;
+      const nearEnd = runtime - 20 * 10000000;
+      expect(
+        resumePlaybackPosition(
+          playbackPositionTicks: nearEnd,
+          runTimeTicks: runtime,
+          playedPercentage: 99.4,
+        ),
+        isNull,
+      );
+    });
+
+    test('returns null when pct >= 90 and no ticks are available', () {
+      expect(
+        resumePlaybackPosition(
+          playbackPositionTicks: null,
+          playedPercentage: 92,
+          runTimeTicks: 3600 * 10000000,
+        ),
+        isNull,
+      );
+    });
+
+    test('no runtime means near-end guard cannot apply (strm cold fetch)', () {
+      const runtime = 3600 * 10000000;
+      const nearEnd = runtime - 20 * 10000000;
+      // Without runtime the position still resumes — screens are expected to
+      // supply the item-metadata RunTimeTicks fallback for lazy strm sources.
+      expect(
+        resumePlaybackPosition(playbackPositionTicks: nearEnd),
+        const Duration(seconds: 3580),
+      );
+    });
+
     test('returns seek target for resumable progress', () {
       const ticks = 45 * 60 * 10000000;
       expect(

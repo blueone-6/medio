@@ -75,16 +75,20 @@ GoRouter createAppRouter() {
           final ticksRaw = state.uri.queryParameters['positionTicks'];
           final hintTicks =
               ticksRaw != null ? int.tryParse(ticksRaw) : null;
+          final pctRaw = state.uri.queryParameters['playedPercentage'];
+          final hintPct = pctRaw != null ? double.tryParse(pctRaw) : null;
           final screen = isAndroidTv
               ? TvPlayerScreen(
                   key: ValueKey('tv-$itemId'),
                   itemId: itemId,
                   hintPositionTicks: hintTicks,
+                  hintPlayedPercentage: hintPct,
                 )
               : PlayerScreen(
                   key: ValueKey(itemId),
                   itemId: itemId,
                   hintPositionTicks: hintTicks,
+                  hintPlayedPercentage: hintPct,
                 );
           // TV: skip fade/scale — the secondary animation squeezes the home
           // route underneath to ~8px during pop and triggers layout overflows.

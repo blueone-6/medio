@@ -42,7 +42,9 @@ class TvExoPlayerBridge(
 
     private fun tvTrackSelectorParameters(hdrContent: Boolean): DefaultTrackSelector.Parameters {
         return trackSelector.buildUponParameters()
-            .setMaxVideoSize(1920, 1080)
+            // No max-video-size cap: 4K direct play is the design intent
+            // (hardware decode via ExoPlayer); a 1080p cap silently degraded
+            // every 4K source on TV.
             // Tunneling can strip HDR metadata on some MTK SoCs — disable for HDR.
             .setTunnelingEnabled(!hdrContent)
             .setIgnoredTextSelectionFlags(

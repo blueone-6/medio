@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 
 import '../../core/layout/platform_layout.dart';
+import '../../core/player/seek_step.dart';
 import 'player_gesture_hud.dart';
 
 enum _LockedPanAxis { none, horizontal, vertical }
@@ -269,15 +270,8 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
     });
   }
 
-  static int _seekStepForDuration(Duration held) {
-    final ms = held.inMilliseconds;
-    if (ms < 500) return 2;
-    if (ms < 1000) return 5;
-    if (ms < 2000) return 10;
-    if (ms < 4000) return 20;
-    if (ms < 7000) return 40;
-    return 60;
-  }
+  static int _seekStepForDuration(Duration held) =>
+      gestureSeekStepForHold(held);
 
   Future<void> _applyBrightnessFromTotalDy(
     double totalDy,

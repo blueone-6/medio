@@ -32,8 +32,9 @@ Future<void> logMpvSubtitleDecoderSupport(Player player) async {
     if (pgs.isEmpty) {
       AppLog.instance.w(
         'Subtitle',
-        'PGS decoder missing in bundled libmpv; text subtitles will be used as fallback',
-        'then rebuild the app.',
+        'PGS decoder missing in bundled libmpv; text subtitles will be used '
+        'as fallback. If PGS support is required, bundle a libmpv build with '
+        'pgssub/dvdsub decoders and rebuild the app.',
       );
     }
   } catch (e, st) {
