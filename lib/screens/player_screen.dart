@@ -16,6 +16,7 @@ import '../core/logging/perf.dart';
 import '../core/player/apply_emby_subtitle.dart';
 import '../core/player/bogus_position_guard.dart';
 import '../core/player/seek_step.dart';
+import '../core/player/seek_verification.dart';
 import '../core/player/player_subtitle_visibility.dart';
 import '../core/player/select_embedded_subtitle.dart';
 import '../core/player/subtitle_switch_queue.dart';
@@ -616,12 +617,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _verifyUserSeekLanded(Duration target) {
     final pos = _effectivePlaybackPosition() ?? _player.state.position;
-    if ((pos - target).abs() <= _userSeekVerificationTolerance) return;
+    // The verification runs several seconds after the seek was requested —
+    // a landed seek has kept playing since then, so compare against a
+    // time-aware window, not the bare target (see seek_verification.dart).
+    final seekAt = _lastUserSeekAt;
+    final elapsedSinceSeek = seekAt == null
+        ? Duration.zero
+        : DateTime.now().difference(seekAt);
+    if (userSeekLanded(
+      pos: pos,
+      target: target,
+      elapsedSinceSeek: elapsedSinceSeek,
+      tolerance: _userSeekVerificationTolerance,
+    )) {
+      return;
+    }
 
     AppLog.instance.w(
       'Player',
       'user seek did not land (pos=${pos.inSeconds}s '
-          'target=${target.inSeconds}s) - re-opening at target',
+          'target=${target.inSeconds}s '
+          'elapsed=${elapsedSinceSeek.inSeconds}s) - re-opening at target',
     );
     unawaited(_handlePlaybackStall(resumeAt: target));
   }
