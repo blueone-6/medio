@@ -96,4 +96,39 @@ void main() {
       );
     });
   });
+
+  group('isStaleSeekVerification', () {
+    test('slider seek superseded by keyboard seek is stale', () {
+      // Production regression: slider seek to 182 s, keyboard +10 s seek
+      // landed at ~194 s; the stale slider verification saw pos=196 s,
+      // misjudged "did not land" and re-opened the stream.
+      expect(
+        isStaleSeekVerification(
+          target: const Duration(seconds: 182),
+          latestUserSeekTarget: const Duration(seconds: 194),
+        ),
+        isTrue,
+      );
+    });
+
+    test('verification for the latest seek is not stale', () {
+      expect(
+        isStaleSeekVerification(
+          target: const Duration(seconds: 194),
+          latestUserSeekTarget: const Duration(seconds: 194),
+        ),
+        isFalse,
+      );
+    });
+
+    test('no user seek on record is not stale', () {
+      expect(
+        isStaleSeekVerification(
+          target: const Duration(seconds: 182),
+          latestUserSeekTarget: null,
+        ),
+        isFalse,
+      );
+    });
+  });
 }

@@ -616,6 +616,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   void _verifyUserSeekLanded(Duration target) {
+    // A newer user seek (e.g. keyboard arrows right after a slider drag)
+    // supersedes the one that armed this verification: the live position
+    // reflects the newer target, and comparing it against the stale one
+    // would falsely trigger the disruptive re-open below. The newer seek
+    // arms its own verification; a stale one must simply be dropped.
+    if (isStaleSeekVerification(
+      target: target,
+      latestUserSeekTarget: _lastUserSeekTarget,
+    )) {
+      return;
+    }
     final pos = _effectivePlaybackPosition() ?? _player.state.position;
     // The verification runs several seconds after the seek was requested —
     // a landed seek has kept playing since then, so compare against a
@@ -2061,6 +2072,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _onSeekAfterPlaybackStopped(target);
       _player.seek(target);
       _rearmStallDetectorAfterSeek();
+      // Supersedes any verification armed by a previous user seek (e.g. a
+      // slider drag right before these arrows) and verifies this seek's own
+      // target instead.
+      _scheduleUserSeekVerification(target);
     }
     _arrowHoldStart = null;
     _arrowHoldDirection = 0;
@@ -2433,6 +2448,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _onSeekAfterPlaybackStopped(next);
     _player.seek(next);
     _rearmStallDetectorAfterSeek();
+    // Supersedes any verification armed by a previous user seek and verifies
+    // this seek's own target instead.
+    _scheduleUserSeekVerification(next);
   }
 
   void _adjustVolumeDelta(double delta) {

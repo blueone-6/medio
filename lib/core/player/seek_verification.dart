@@ -13,6 +13,24 @@
 /// the window (for any seek distance larger than the window itself).
 library;
 
+/// Whether a pending verification armed for [target] was superseded by a
+/// newer user seek.
+///
+/// The verification timer captures the target of the seek that armed it, but
+/// the position it inspects later reflects whichever seek happened *last*.
+/// A newer user seek moves the position away from [target] legitimately;
+/// letting the stale verification run would misread the new position as
+/// "did not land" and trigger a disruptive re-open (observed in production
+/// logs: slider seek to 182 s, keyboard +10 s seek landed at ~194 s, 2 s
+/// later the stale verification saw pos=196 s vs target=182 s and re-opened
+/// the stream at the wrong spot).
+bool isStaleSeekVerification({
+  required Duration target,
+  required Duration? latestUserSeekTarget,
+}) {
+  return latestUserSeekTarget != null && latestUserSeekTarget != target;
+}
+
 /// Whether [pos] is consistent with a seek to [target] that landed and kept
 /// playing for [elapsedSinceSeek].
 ///
