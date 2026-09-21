@@ -1857,7 +1857,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   }
 
   /// Compact mobile layout.
-  /// Portrait: center transport + right "more" menu (buttons fold into menu).
+  /// Portrait: center transport, 选集 on the left, 全屏/更多 on the right.
   /// Landscape: full 3-column layout — all controls visible directly.
   Widget _buildCompactTransportRow({
     required Color playFill,
@@ -1979,15 +1979,14 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
       ]);
     }
 
-    // ── Portrait: play button exactly centered, side actions on the right ──
+    // ── Portrait: play button exactly centered, actions on both sides ──
     return SizedBox(
       height: _hitSize,
       child: Stack(
         alignment: Alignment.center,
         children: [
           // Centered 3-button transport — the play button sits on the true
-          // horizontal center of the screen regardless of the right-side
-          // actions (选集 / 全屏 / 更多).
+          // horizontal center of the screen regardless of the side actions.
           FittedBox(
             fit: BoxFit.scaleDown,
             child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -2000,18 +1999,24 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                   () => _seekRelative(10)),
             ]),
           ),
+          // 选集 lives on the far LEFT: the right side already stacks
+          // 全屏 + 更多, and on narrow portrait screens the centered
+          // forward-10 button would crowd (or overlap) a right-side 选集.
+          if (widget.showEpisodeControls && widget.onToggleEpisodeList != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: _compactIconBtn(
+                widget.episodeListOpen
+                    ? Icons.playlist_play_rounded
+                    : Icons.playlist_play_outlined,
+                '选集',
+                widget.episodeListOpen ? menuAccent : _foreground,
+                _deferEpisodeListToggle,
+              ),
+            ),
           Align(
             alignment: Alignment.centerRight,
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              if (widget.showEpisodeControls && widget.onToggleEpisodeList != null)
-                _compactIconBtn(
-                  widget.episodeListOpen
-                      ? Icons.playlist_play_rounded
-                      : Icons.playlist_play_outlined,
-                  '选集',
-                  widget.episodeListOpen ? menuAccent : _foreground,
-                  _deferEpisodeListToggle,
-                ),
               if (widget.onToggleFullScreen != null)
                 _compactIconBtn(
                   widget.isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
