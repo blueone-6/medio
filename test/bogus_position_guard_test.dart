@@ -316,4 +316,120 @@ void main() {
       );
     });
   });
+
+  group('collapsedPositionRecoveryTarget', () {
+    test('production case: collapse to ~0 after a recovery re-open at 141s', () {
+      // User seeked to 141s, the recovery re-open stalled on the CDN, mpv
+      // reset time-pos to 0.04s; the exit report must fall back to 141s
+      // instead of wiping the resume point.
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: const Duration(milliseconds: 40),
+          confirmedPos: const Duration(seconds: 141),
+          confirmedAge: const Duration(seconds: 7),
+        ),
+        const Duration(seconds: 141),
+      );
+    });
+
+    test('returns null without a confirmed position', () {
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: Duration.zero,
+          confirmedPos: null,
+          confirmedAge: null,
+        ),
+        isNull,
+      );
+    });
+
+    test('stale confirmation (paused for minutes) is ignored', () {
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: const Duration(seconds: 2),
+          confirmedPos: const Duration(minutes: 10),
+          confirmedAge: const Duration(minutes: 5),
+        ),
+        isNull,
+      );
+    });
+
+    test('tiny confirmed positions (<5s) never clamp', () {
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: Duration.zero,
+          confirmedPos: const Duration(seconds: 4),
+          confirmedAge: const Duration(seconds: 3),
+        ),
+        isNull,
+      );
+    });
+
+    test('small drops (<30s) are not a collapse', () {
+      // Regular seek jitter / re-sync within a 30s window keeps the live
+      // position.
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: const Duration(seconds: 100),
+          confirmedPos: const Duration(seconds: 128),
+          confirmedAge: const Duration(seconds: 10),
+        ),
+        isNull,
+      );
+    });
+
+    test('position above the confirmed position is not a collapse', () {
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: const Duration(minutes: 10),
+          confirmedPos: const Duration(minutes: 5),
+          confirmedAge: const Duration(seconds: 30),
+        ),
+        isNull,
+      );
+    });
+
+    test('recent user seek backwards to near pos is the user\'s intent', () {
+      // User at 600s dragged the slider back to 30s and it landed: the
+      // small position is intended and must not be clamped back up.
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: const Duration(seconds: 31),
+          confirmedPos: const Duration(seconds: 600),
+          confirmedAge: const Duration(seconds: 4),
+          userSeekTarget: const Duration(seconds: 30),
+          userSeekAge: const Duration(seconds: 4),
+        ),
+        isNull,
+      );
+    });
+
+    test('stale user seek (past 15s) no longer exempts the collapse', () {
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: const Duration(seconds: 2),
+          confirmedPos: const Duration(seconds: 600),
+          confirmedAge: const Duration(seconds: 10),
+          userSeekTarget: const Duration(seconds: 30),
+          userSeekAge: const Duration(seconds: 16),
+        ),
+        const Duration(seconds: 600),
+      );
+    });
+
+    test('forward seek target far from pos does not exempt the collapse', () {
+      // User seeked forward to 900s but mpv collapsed to ~0: the target
+      // explains nothing — fall back to the last confirmed 600s.
+      expect(
+        collapsedPositionRecoveryTarget(
+          pos: const Duration(milliseconds: 500),
+          confirmedPos: const Duration(seconds: 600),
+          confirmedAge: const Duration(seconds: 5),
+          userSeekTarget: const Duration(seconds: 900),
+          userSeekAge: const Duration(seconds: 3),
+        ),
+        const Duration(seconds: 600),
+      );
+    });
+  });
 }

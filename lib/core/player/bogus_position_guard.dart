@@ -94,6 +94,51 @@ FreshPositionVerdict classifyFreshPlaybackPosition({
 Duration _maxPlausibleContent(Duration elapsed) =>
     Duration(milliseconds: elapsed.inMilliseconds * 2 + 3000);
 
+/// Returns the last confirmed position when [pos] has implausibly collapsed
+/// relative to it, so progress/stop reporting and stall recovery fall back
+/// to the user's real place in the file instead of wiping it.
+///
+/// Observed in production (desktop, 115 CDN): a user seek to 141s never
+/// landed, the recovery re-open at 141s stalled on the CDN, and mpv reset
+/// time-pos to ~0.04s while no data flowed; the exit report then sent that
+/// collapsed value to /Sessions/Playing/Stopped, destroying the resume
+/// point.
+///
+/// A collapse is a large backwards drop ([minDrop]) from a fresh
+/// confirmation with no user seek explaining it: a genuine seek backwards
+/// targets near [pos] and exempts the collapse, and without a seek real
+/// playback never jumps backwards (mpv only resets time-pos while
+/// re-opening a stream).
+Duration? collapsedPositionRecoveryTarget({
+  required Duration pos,
+  required Duration? confirmedPos,
+  required Duration? confirmedAge,
+  Duration? userSeekTarget,
+  Duration? userSeekAge,
+  Duration minDrop = const Duration(seconds: 30),
+  Duration maxConfirmedAge = const Duration(seconds: 90),
+  Duration maxSeekAge = const Duration(seconds: 15),
+  Duration seekTolerance = const Duration(seconds: 30),
+}) {
+  if (confirmedPos == null || confirmedAge == null) return null;
+  // A stale confirmation (e.g. long pause) must not override the live
+  // position — the collapse may be genuine elapsed-time state.
+  if (confirmedAge > maxConfirmedAge) return null;
+  // A tiny confirmed position carries no meaningful place to recover to.
+  if (confirmedPos <= const Duration(seconds: 5)) return null;
+  final drop = confirmedPos - pos;
+  if (drop < minDrop) return null;
+  // A recent user seek targeting near [pos] means the small position is
+  // the user's own seek backwards landing — never clamp it back up.
+  if (userSeekTarget != null &&
+      userSeekAge != null &&
+      userSeekAge <= maxSeekAge &&
+      (userSeekTarget - pos).abs() <= seekTolerance) {
+    return null;
+  }
+  return confirmedPos;
+}
+
 /// If [pos] is an implausible jump to ≈duration — i.e. the last confirmed
 /// mid-file position was not near the end, yet [pos] is at/near the end far
 /// faster than real (≈1x) playback could have covered that content distance —

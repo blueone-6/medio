@@ -25,6 +25,7 @@ import '../core/player/subtitle_mpv_probe.dart';
 import '../core/player/player_subtitle_position.dart';
 import '../core/player/episode_navigation.dart';
 import '../core/player/playback_resume.dart';
+import '../core/player/reopen_backoff.dart';
 import '../core/player/player_codec_error.dart';
 import '../core/player/player_network_error.dart';
 import '../core/player/player_http_headers.dart';
@@ -215,6 +216,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   static const _maxStallRecoveryAttempts = 2;
   int _stallRecoveryAttempts = 0;
 
+  /// Consecutive failed recovery re-opens. Drives the backoff between
+  /// `stop()` and the next open: rapid re-opens against the same CDN URL
+  /// trip its per-URL connection management (production logs: seven opens
+  /// in ~12s, all fast-refused, success only ~13s after the first failure).
+  /// Reset when a first frame confirms a re-open actually worked.
+  int _consecutiveReopenFailures = 0;
+  int _reopenBackoffGeneration = 0;
+
   /// Verifies that a user-requested seek actually landed in mpv. Remote MKV
   /// sources can silently reject byte-range seeks, after which the UI briefly
   /// shows the requested target before mpv falls back to the old position.
@@ -267,6 +276,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// gates the guard's seek - does NOT affect [_isFreshPlaybackPositionBogus].
   bool _bogusPositionCorrected = false;
 
+  /// Wall-clock time of the last bogus-position corrective seek. mpv queues
+  /// seeks until its initial load completes, so the position can stay bogus
+  /// for a few seconds after the seek before it applies — the stall detector
+  /// waits out [_bogusSeekGrace] instead of re-bootstrapping a stream that is
+  /// still loading (that re-bootstrap itself is what triggered the CDN
+  /// re-open failure storm; see [_consecutiveReopenFailures]).
+  DateTime? _bogusPositionCorrectedAt;
+  static const _bogusSeekGrace = Duration(seconds: 4);
+
   /// True once mpv has reported a position that is clearly legitimate (non-
   /// trivial, within the playable range, and consistent with elapsed wall-clock
   /// time). Until this latch fires, suspicious positions near the end of the
@@ -275,6 +293,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// [_bogusPositionCorrected] disabled all future detection after a single
   /// seek(0), allowing persistent bogus positions through on cold CDN streams.
   bool _legitimatePositionSeen = false;
+
+  /// Previous position sample from the guard's stream subscription. Used to
+  /// require real advancement before a resume-session position latches
+  /// [_legitimatePositionSeen]: mpv echoes the `--start` target in its
+  /// position property before any data flows, and that echo must not count
+  /// as confirmed playback (observed: "legitimate position observed
+  /// (pos=141s)" right after a recovery re-open that never rendered a frame).
+  Duration? _prevGuardSample;
 
   /// Watches the position stream during early playback and force-seeks to 0
   /// when mpv reports the bogus "position ≈ duration" state on fresh strm
@@ -335,7 +361,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Duration? _effectivePlaybackPosition() {
     try {
       final pos = _player.state.position;
-      if (pos <= Duration.zero) return null;
+      if (pos <= Duration.zero) return _collapsedPositionTarget(pos);
       // Suppress the bogus "position ≈ duration" state mpv reports on fresh
       // strm playback with a cold CDN cache - reporting it would mark the
       // episode as watched at 100% even though nothing actually played.
@@ -344,10 +370,39 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // otherwise be reported as 100% watched on exit / progress. Fall back to
       // the last confirmed mid-file position.
       final recoverTo = _implausibleEndJumpTarget(pos, _player.state.duration);
-      return recoverTo ?? pos;
+      if (recoverTo != null) return recoverTo;
+      // A collapsed position (mpv reset time-pos to ~0 while the CDN hangs
+      // after a seek/stall recovery) must not wipe the user's real place in
+      // the file either — fall back to the last confirmed position.
+      return _collapsedPositionTarget(pos) ?? pos;
     } catch (_) {
       return null;
     }
+  }
+
+  /// Last confirmed mid-file position when mpv's position has implausibly
+  /// collapsed relative to it (see [collapsedPositionRecoveryTarget]).
+  /// Null when the live position is plausible.
+  Duration? _collapsedPositionTarget(Duration pos) {
+    final target = collapsedPositionRecoveryTarget(
+      pos: pos,
+      confirmedPos: _lastConfirmedPosition,
+      confirmedAge: _lastConfirmedPositionAt == null
+          ? null
+          : DateTime.now().difference(_lastConfirmedPositionAt!),
+      userSeekTarget: _lastUserSeekTarget,
+      userSeekAge: _lastUserSeekAt == null
+          ? null
+          : DateTime.now().difference(_lastUserSeekAt!),
+    );
+    if (target != null) {
+      AppLog.instance.w(
+        'Player',
+        'position collapsed (pos=${pos.inMilliseconds}ms) - '
+            'using last confirmed ${target.inSeconds}s instead',
+      );
+    }
+    return target;
   }
 
   int? _capturePlaybackPositionTicks() {
@@ -405,23 +460,46 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// Thin wrapper over [classifyFreshPlaybackPosition]: keeps the
   /// `_legitimatePositionSeen` latch and its logging as side effects here so
   /// the decision core stays a pure function (see bogus_position_guard.dart).
-  bool _isFreshPlaybackPositionBogus(Duration pos) {
+  ///
+  /// [sustained] marks a position sample that advanced from the previous
+  /// stream sample (see [_prevGuardSample]). For resume sessions, a position
+  /// matching `--start` may just be mpv echoing the start target before any
+  /// data flows; only a sustained sample — or a landed user seek — may latch
+  /// the guard.
+  bool _isFreshPlaybackPositionBogus(Duration pos, {bool sustained = false}) {
     if (_legitimatePositionSeen) return false;
     final started = _playbackStartedAt;
     if (started == null) return false;
 
     final now = DateTime.now();
+    final userSeekTarget = _lastUserSeekTarget;
+    final userSeekAge = _lastUserSeekAt == null
+        ? null
+        : now.difference(_lastUserSeekAt!);
     final verdict = classifyFreshPlaybackPosition(
       pos: pos,
       duration: _player.state.duration,
       elapsed: now.difference(started),
       resumeTarget: _resumeTargetForGuard,
-      userSeekTarget: _lastUserSeekTarget,
-      userSeekAge: _lastUserSeekAt == null
-          ? null
-          : now.difference(_lastUserSeekAt!),
+      userSeekTarget: userSeekTarget,
+      userSeekAge: userSeekAge,
     );
     if (verdict == FreshPositionVerdict.legitimate) {
+      // Only positions *near the resume target* can be `--start` echoes
+      // (mpv publishes the target in its position property before any data
+      // flows). A legitimate position far past the window means real
+      // playback covered the distance — always honest.
+      final resumeEcho = _resumeTargetForGuard != null &&
+          (pos - _resumeTargetForGuard!).abs() <= const Duration(seconds: 60);
+      final seekLanded = userSeekTarget != null &&
+          userSeekAge != null &&
+          userSeekAge <= const Duration(seconds: 15) &&
+          (pos - userSeekTarget).abs() <= const Duration(seconds: 5);
+      if (resumeEcho && !sustained && !seekLanded) {
+        // Resume-target echo without advancement: not bogus, but not
+        // confirmed playback either.
+        return false;
+      }
       _legitimatePositionSeen = true;
       AppLog.instance.d(
         'Player',
@@ -439,6 +517,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// of the file.
   void _installPositionGuard() {
     _positionGuardSub?.cancel();
+    _prevGuardSample = null;
     AppLog.instance.d(
       'Player',
       'position guard armed: fresh=${_resumeTargetForGuard == null} '
@@ -446,27 +525,33 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     );
     _positionGuardSub = _player.stream.position.listen((pos) {
       if (!mounted) return;
+      final sustained = _prevGuardSample != null && pos > _prevGuardSample!;
+      _prevGuardSample = pos;
+      if (_isFreshPlaybackPositionBogus(pos, sustained: sustained)) {
+        if (_bogusPositionCorrected) return;
+        _bogusPositionCorrected = true;
+        _bogusPositionCorrectedAt = DateTime.now();
+        final seekTarget = _resumeTargetForGuard ?? Duration.zero;
+        AppLog.instance.w(
+          'Player',
+          'bogus position detected (pos=${pos.inSeconds}s '
+              'dur=${_player.state.duration.inSeconds}s '
+              'resume=${_resumeTargetForGuard?.inSeconds}s) - '
+              'seeking to ${seekTarget.inSeconds}s to recover',
+        );
+        _lastSeekAt = DateTime.now();
+        unawaited(_player.seek(seekTarget));
+        return;
+      }
       // Track the latest plausible mid-file position (skipping near-end /
-      // bogus EOF values) so a later spurious EOF can be distinguished from a
-      // genuine completion by _onPlaybackCompleted.
+      // bogus values) so a later spurious EOF can be distinguished from a
+      // genuine completion by _onPlaybackCompleted, and so a collapsed
+      // position can be clamped back to it (see _collapsedPositionTarget).
       if (pos > const Duration(seconds: 5) &&
           !isPlaybackNearEnd(pos, _player.state.duration)) {
         _lastConfirmedPosition = pos;
         _lastConfirmedPositionAt = DateTime.now();
       }
-      if (_bogusPositionCorrected) return;
-      if (!_isFreshPlaybackPositionBogus(pos)) return;
-      _bogusPositionCorrected = true;
-      final seekTarget = _resumeTargetForGuard ?? Duration.zero;
-      AppLog.instance.w(
-        'Player',
-        'bogus position detected (pos=${pos.inSeconds}s '
-            'dur=${_player.state.duration.inSeconds}s '
-            'resume=${_resumeTargetForGuard?.inSeconds}s) - '
-            'seeking to ${seekTarget.inSeconds}s to recover',
-      );
-      _lastSeekAt = DateTime.now();
-      unawaited(_player.seek(seekTarget));
     });
   }
 
@@ -509,6 +594,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (_isFreshPlaybackPositionBogus(pos)) {
         if (!_bogusPositionCorrected) {
           _bogusPositionCorrected = true;
+          _bogusPositionCorrectedAt = DateTime.now();
           final seekTarget = _resumeTargetForGuard ?? Duration.zero;
           AppLog.instance.w(
             'Player',
@@ -519,6 +605,29 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           _lastSeekAt = DateTime.now();
           unawaited(_player.seek(seekTarget));
           _rearmStallDetectorAfterSeek();
+          return;
+        }
+        // The corrective seek may still be queued: mpv applies seeks only
+        // after its initial load completes, and the position can stay bogus
+        // for a few seconds in the meantime. Re-bootstrapping this early
+        // throws away a stream that is still loading, and the re-open itself
+        // trips the CDN's per-URL connection management (observed in
+        // production: seek(0) → re-bootstrap 1.5s later → "Failed to open"
+        // storm for ~13s). Wait out the grace window first.
+        final correctedAt = _bogusPositionCorrectedAt;
+        final sinceCorrectedSeek = correctedAt == null
+            ? null
+            : DateTime.now().difference(correctedAt);
+        if (sinceCorrectedSeek != null &&
+            sinceCorrectedSeek < _bogusSeekGrace) {
+          AppLog.instance.w(
+            'Player',
+            'stall detector: bogus pos=${pos.inSeconds}s persists '
+                '${sinceCorrectedSeek.inSeconds}s after corrective seek '
+                '(grace=${_bogusSeekGrace.inSeconds}s) - re-checking '
+                'before re-bootstrap',
+          );
+          _installStallDetector();
           return;
         }
         // seek(0) was already attempted but position is still bogus — mpv
@@ -712,6 +821,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         ? null
         : (recoveryPosition.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
 
+    // Carry the recovery position into the confirmed-position tracker
+    // (computed before stop(), while the duration is still valid): if the
+    // re-open collapses (mpv resets time-pos to ~0 while the CDN hangs),
+    // the exit/stop report and any further recovery fall back to it instead
+    // of wiping the user's real place in the file (observed in production:
+    // seek to 141s → recovery re-open → Stopped reported at 0.04s). Fresh
+    // recoveries keep the old reset so early positions aren't compared
+    // against a stale value.
+    if (recoveryPosition != null &&
+        recoveryPosition > const Duration(seconds: 5) &&
+        !isPlaybackNearEnd(recoveryPosition, _player.state.duration)) {
+      _lastConfirmedPosition = recoveryPosition;
+      _lastConfirmedPositionAt = DateTime.now();
+    } else {
+      _lastConfirmedPosition = null;
+      _lastConfirmedPositionAt = null;
+    }
+
     _cancelStallDetector();
     _cancelProgressReporting();
     _cancelNetworkRecovery();
@@ -736,6 +863,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     if (!mounted) return;
 
+    setState(() {
+      _error = null;
+      _reconnecting = true;
+      _loading = true;
+    });
+
+    // Space the re-open away from the stop(): rapid stop→open cycles against
+    // the same CDN URL trip its per-URL connection management and every open
+    // fails fast until the stale connection expires (~10s in production
+    // logs) — see reopen_backoff.dart.
+    if (!await _waitReopenBackoff('stall recovery')) return;
+
     // Reset bootstrap state to allow a fresh run.
     _bootstrapped = false;
     _bootstrapCancelled = false;
@@ -745,6 +884,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _firstFramePerfDone = false;
     _playbackReportedStopped = false;
     _bogusPositionCorrected = false;
+    _bogusPositionCorrectedAt = null;
     _legitimatePositionSeen = false;
     _lastUserSeekTarget = null;
     _lastUserSeekAt = null;
@@ -754,10 +894,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // the escalation path for it, so its retries must stop).
     _subtitleEofRecoveryToken++;
     _subtitleEofRecoveryUntil = null;
-    // Drop the previous session's confirmed position so a fresh playback's
-    // early positions aren't compared against it.
-    _lastConfirmedPosition = null;
-    _lastConfirmedPositionAt = null;
     // Reset "Failed to open" auto-retry counter so the new bootstrap can use
     // its full retry budget if the go-emby2openlist plugin is still resolving.
     _openRetryAttempts = 0;
@@ -774,6 +910,29 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     setState(() {
       _reconnecting = false;
     });
+  }
+
+  /// Increments the consecutive re-open counter and waits
+  /// [reopenBackoffDelay] before the next open, giving the CDN time to
+  /// expire the stale connection from the previous stream. Returns false
+  /// when the wait was superseded (widget unmounted, player leaving,
+  /// bootstrap cancelled, or a newer wait started) and the recovery must
+  /// abort.
+  Future<bool> _waitReopenBackoff(String reason) async {
+    final priorFailures = _consecutiveReopenFailures;
+    _consecutiveReopenFailures = priorFailures + 1;
+    final delay = reopenBackoffDelay(priorFailures);
+    final gen = ++_reopenBackoffGeneration;
+    AppLog.instance.w(
+      'Player',
+      '$reason: waiting ${delay.inSeconds}s before re-open '
+          '(failed re-opens=$_consecutiveReopenFailures)',
+    );
+    await Future<void>.delayed(delay);
+    return mounted &&
+        !_leavingPlayer &&
+        !_bootstrapCancelled &&
+        gen == _reopenBackoffGeneration;
   }
 
   Duration _clampResumePosition(Duration at, int? runTimeTicks) {
@@ -1175,6 +1334,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   Future<void> _autoRetryAfterOpenFailure() async {
     await _preparePlaybackRetry();
     if (!mounted) return;
+    // Space the re-open away from the stop() the retry just performed —
+    // rapid re-opens trip the CDN's per-URL connection management and turn
+    // a transient refusal into a rapid-fire failure storm (observed: three
+    // "Failed to open" rounds within ~8s, success only ~13s in). See
+    // reopen_backoff.dart.
+    if (!await _waitReopenBackoff('open-failure auto-retry')) return;
+    if (!mounted) return;
     setState(() {
       _error = null;
       _loading = true;
@@ -1406,6 +1572,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       // the guard force-seeks to 0 to recover playback.
       _playbackStartedAt = DateTime.now();
       _bogusPositionCorrected = false;
+      _bogusPositionCorrectedAt = null;
       _legitimatePositionSeen = false;
       _lastUserSeekTarget = null;
       _lastUserSeekAt = null;
@@ -1498,6 +1665,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     void settle(String reason) {
       if (_firstFrameReported) return;
       _firstFrameReported = true;
+      // A rendered frame confirms the open worked — give the next recovery
+      // re-open a fresh backoff budget. The 12s safety timeout settle is not
+      // playback confirmation.
+      if (reason != 'timeout') {
+        _consecutiveReopenFailures = 0;
+      }
       _trySettleFirstFrame = null;
       _bootstrapTimeoutTimer?.cancel();
       _bootstrapTimeoutTimer = null;
