@@ -32,6 +32,9 @@ import '../core/player/player_http_headers.dart';
 import '../core/player/android_video_output_ready.dart';
 import '../core/player/player_home_refresh.dart';
 import '../core/player/player_video_controller_config.dart';
+import '../core/player/player_audio_speed.dart';
+import '../core/player/player_volume_memory.dart';
+import '../core/player/prefetch_suspend.dart';
 import '../core/player/player_subtitle_delay.dart';
 import '../core/player/player_mpv_properties.dart';
 import '../core/player/external_cdn_headers.dart';
@@ -72,7 +75,8 @@ class PlayerScreen extends ConsumerStatefulWidget {
   ConsumerState<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends ConsumerState<PlayerScreen> {
+class _PlayerScreenState extends ConsumerState<PlayerScreen>
+    with WidgetsBindingObserver {
   static const _chromeHideDelay = Duration(seconds: 4);
 
   /// Carries landscape preference across [context.replace] when switching episodes.
@@ -157,6 +161,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   double? _preMuteVolume;
   final ValueNotifier<int> _volumeShowToken = ValueNotifier<int>(0);
   final ValueNotifier<int> _gestureSeekPreview = ValueNotifier<int>(0);
+
+  /// Precise volume target between async setVolume calls (absorbed from
+  /// Kazumi's `preciseVolume`): rapid keyboard autorepeat / gesture deltas
+  /// must not read-modify-write through the asynchronously-updating
+  /// [Player.state.volume] or steps get lost. Re-synced by the volume stream.
+  double? _volumeAdjustAnchor;
+
+  /// Persists volume changes (debounced) so the next session/episode restores
+  /// the last level instead of mpv's default 100.
+  StreamSubscription<double>? _volumePersistSub;
+  Timer? _volumePersistTimer;
+  static const _volumePersistDelay = Duration(seconds: 1);
+
+  /// Latest requested prefetch-suspension state; a queued write applies this
+  /// value when it runs, so rapid lifecycle flips cannot reorder.
+  bool _prefetchSuspendWanted = false;
+
+  /// Serializes prefetch property writes (same idiom as [_fullscreenOpChain]).
+  Future<void> _prefetchWriteChain = Future<void>.value();
 
   /// 长按方向键快进/快退的状态。
   DateTime? _arrowHoldStart;
@@ -323,6 +346,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final playerSvc = ref.read(playerServiceProvider);
     playerSvc.disposePlayer();
     _player = playerSvc.player;
@@ -356,6 +380,62 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _networkRecoveryGeneration++;
     _networkRecoveryInProgress = false;
     _reconnecting = false;
+  }
+
+  // ── Android background prefetch suspension (absorbed from Kazumi) ──
+  //
+  // Android blocks network access for backgrounded apps; a prefetching mpv
+  // demuxer then burns through ffmpeg's reconnect/segment retries and marks
+  // the stream EOF, leaving playback permanently stuck once foregrounded.
+  // Suspending the prefetch window before the freeze keeps buffered data
+  // intact; restoring it after resume lets playback continue cleanly.
+
+  /// Serializes prefetch writes; a queued write applies the latest wanted
+  /// state, so rapid lifecycle flips cannot reorder.
+  Future<void> _setPrefetchSuspended(bool suspended) {
+    _prefetchSuspendWanted = suspended;
+    final done = Completer<void>();
+    _prefetchWriteChain = _prefetchWriteChain.then((_) async {
+      try {
+        await _player.applyPrefetchSuspend(_prefetchSuspendWanted);
+      } catch (e) {
+        // The player may already be disposing (episode switch / exit); the
+        // next lifecycle flip re-applies on the live player.
+        AppLog.instance.d('Player', 'prefetch suspend write skipped: $e');
+      } finally {
+        if (!done.isCompleted) done.complete();
+      }
+    });
+    return done.future;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (!isAndroidMobileUi) return;
+    if (state == AppLifecycleState.paused) {
+      // Queue the suspend first so a rapid pause→resume cannot order the
+      // restore before the suspend (Kazumi's ordering).
+      unawaited(_setPrefetchSuspended(true));
+      if (_player.state.playing) {
+        unawaited(_pauseForBackground());
+      }
+      return;
+    }
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_setPrefetchSuspended(false));
+    }
+  }
+
+  /// Pause and flush the Emby progress before the process is frozen, so the
+  /// server holds an accurate resume point for the frozen period.
+  Future<void> _pauseForBackground() async {
+    try {
+      await _player.pause();
+    } catch (_) {}
+    try {
+      await _reportProgress(flushing: true);
+    } catch (_) {}
   }
 
   Duration? _effectivePlaybackPosition() {
@@ -897,12 +977,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // Reset "Failed to open" auto-retry counter so the new bootstrap can use
     // its full retry budget if the go-emby2openlist plugin is still resolving.
     _openRetryAttempts = 0;
-
-    setState(() {
-      _error = null;
-      _reconnecting = true;
-      _loading = true;
-    });
 
     await _bootstrap();
 
@@ -2007,14 +2081,42 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // widListener won't reset the position with seek(Duration.zero).
     AppLog.instance
         .i('Player', 'Resume: starting playback (resume via mpv --start)');
-    final speed = ref.read(settingsServiceProvider).defaultPlaybackSpeed;
+    final settings = ref.read(settingsServiceProvider);
+    final speed = settings.defaultPlaybackSpeed;
 
-    if (isAndroidMobileUi && _player.state.volume <= 0) {
-      await _player.setVolume(100);
+    // Restore the volume remembered from the last session (mpv always starts
+    // at its default 100). Also subsumes the old Android guard that forced
+    // volume 100 when state reported <= 0 on some OEM audio outputs: with no
+    // saved value, [restorePlayerVolume] yields the same 100.
+    final restoredVolume = restorePlayerVolume(settings.playerVolume);
+    if (_player.state.volume != restoredVolume) {
+      try {
+        await _player.setVolume(restoredVolume);
+      } catch (_) {}
     }
+    _volumeAdjustAnchor = restoredVolume;
+    _startVolumePersistence();
 
     await _player.play();
     await _player.setRate(speed);
+  }
+
+  /// Persists volume changes (debounced) once the restored level has been
+  /// applied — subscribing earlier would echo mpv's default 100 over the
+  /// saved value before the restore lands.
+  void _startVolumePersistence() {
+    _volumePersistSub ??= _player.stream.volume.listen((v) {
+      // Ground truth once a write lands; keeps delta anchoring honest.
+      _volumeAdjustAnchor = v;
+      _volumePersistTimer?.cancel();
+      _volumePersistTimer = Timer(_volumePersistDelay, () {
+        final persistable = volumeToPersist(v);
+        if (persistable == null || !mounted) return;
+        final settings = ref.read(settingsServiceProvider);
+        if (settings.playerVolume == persistable) return;
+        unawaited(settings.setPlayerVolume(persistable));
+      });
+    });
   }
 
   /// After mediacodec_embed surface attach on AVD, nudge mpv to repaint without
@@ -2130,6 +2232,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       await _player.applyPlaybackHttpHeaders(headers);
     }
     await _player.applyStreamCacheOptions(enabled: true);
+    // Pitch-corrected audio up to 8x (mpv's auto scaletempo tops out at 2.0,
+    // exactly our max rate). Idempotent across recovery re-opens.
+    await _player.applyPitchCorrectedAudioFilter();
     await _player.open(Media(url, httpHeaders: headers));
   }
 
@@ -2261,10 +2366,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   static int _seekStepForDuration(Duration held) =>
       keyboardSeekStepForHold(held);
 
-  /// 键盘调节音量（delta 为百分比增量，范围 0-100）。
-  void _adjustVolume(double delta) {
-    final vol = _player.state.volume;
-    _player.setVolume((vol + delta).clamp(0, 100));
+  /// 键盘/手势调节音量（delta 为百分比增量，范围 0-100）。
+  void _changeVolume(double delta) {
+    final anchor = _volumeAdjustAnchor ?? _player.state.volume;
+    final next = (anchor + delta).clamp(0.0, 100.0);
+    _volumeAdjustAnchor = next;
+    _player.setVolume(next);
     _volumeShowToken.value++;
   }
 
@@ -2272,7 +2379,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _toggleMute() {
     final vol = _player.state.volume;
     if (vol <= 0.001) {
-      _player.setVolume((_preMuteVolume ?? 50).clamp(1, 100));
+      _volumeAdjustAnchor = (_preMuteVolume ?? 50).clamp(1, 100);
+      _player.setVolume(_volumeAdjustAnchor!);
       _preMuteVolume = null;
     } else {
       _preMuteVolume = vol;
@@ -2624,12 +2732,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // Supersedes any verification armed by a previous user seek and verifies
     // this seek's own target instead.
     _scheduleUserSeekVerification(next);
-  }
-
-  void _adjustVolumeDelta(double delta) {
-    final next = (_player.state.volume + delta).clamp(0.0, 100.0);
-    _player.setVolume(next);
-    _volumeShowToken.value++;
   }
 
   /// Toggle between portrait and landscape on Android.
@@ -2990,8 +3092,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (!_leavingPlayer) {
       unawaited(_stopPlayerForExit());
     }
-    unawaited(_player.applyExternalCdnPlaybackOptions(headers: null));
-    unawaited(_player.applyPlaybackHttpHeaders(null));
+    // Every session starts from a fresh Player (disposePlayer in initState),
+    // so there is no need to clear mpv header props here — it would only race
+    // the dispose below and can leak onto a disposed native player.
+    _volumePersistSub?.cancel();
+    _volumePersistSub = null;
+    _volumePersistTimer?.cancel();
+    _volumePersistTimer = null;
+    WidgetsBinding.instance.removeObserver(this);
     final container = _riverpodContainer;
     if (container != null) {
       try {
@@ -3443,12 +3551,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             return KeyEventResult.handled;
           }
           if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-            _adjustVolume(5);
+            _changeVolume(5);
             _onUserInteraction();
             return KeyEventResult.handled;
           }
           if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-            _adjustVolume(-5);
+            _changeVolume(-5);
             _onUserInteraction();
             return KeyEventResult.handled;
           }
@@ -3487,7 +3595,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                           ? (delta) => _gestureSeekPreview.value = delta
                           : null,
                       onVolumeDelta:
-                          isAndroidMobileUi ? _adjustVolumeDelta : null,
+                          isAndroidMobileUi ? _changeVolume : null,
                       onUserInteraction: _onUserInteraction,
                       child: GestureDetector(
                         behavior: HitTestBehavior.translucent,

@@ -8,6 +8,11 @@ import '../layout/platform_layout.dart';
 // ignore: implementation_imports
 import 'package:media_kit/src/player/native/player/real.dart' as native;
 
+/// Tuned stream-cache values; the background prefetch suspension
+/// (`prefetch_suspend.dart`) restores exactly these after resume.
+const kStreamCacheSecs = 90;
+const kStreamDemuxerReadaheadSecs = 90;
+
 /// Applies HTTP headers and stream tuning on libmpv before opening a remote URL.
 extension PlayerPlaybackHttpHeaders on Player {
   Future<void> applyPlaybackHttpHeaders(Map<String, String>? headers) async {
@@ -98,9 +103,9 @@ extension PlayerPlaybackHttpHeaders on Player {
   /// re-fetching over the network.
   Future<void> applyStreamCacheOptions({
     bool enabled = true,
-    int cacheSecs = 90,
+    int cacheSecs = kStreamCacheSecs,
     String demuxerMaxBytes = '200M',
-    int demuxerReadaheadSecs = 90,
+    int demuxerReadaheadSecs = kStreamDemuxerReadaheadSecs,
   }) async {
     if (kIsWeb) return;
     final platform = this.platform;

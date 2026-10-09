@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:media_kit/media_kit.dart';
 
 import '../core/logging/app_log.dart';
@@ -31,8 +33,25 @@ class PlayerService {
     if (player != null) {
       SubtitleSwitchQueue.reset();
       resetPlayerSubtitleConfigureCache(player);
-      player.dispose();
+      unawaited(_disposeWithFallback(player));
       _player = null;
+    }
+  }
+
+  /// Dispose with a stop() fallback: a failed dispose must not leave the
+  /// native session half-alive (absorbed from Kazumi's `_OwnedPlayer`).
+  Future<void> _disposeWithFallback(Player player) async {
+    try {
+      await player.dispose();
+    } catch (e, st) {
+      AppLog.instance.w(
+        'PlayerService',
+        'dispose failed, falling back to stop()',
+        '$e\n$st',
+      );
+      try {
+        await player.stop();
+      } catch (_) {}
     }
   }
 

@@ -48,6 +48,12 @@ class SettingsService {
   Future<void> setDefaultPlaybackSpeed(double v) =>
       _storage.setDouble(StorageKeys.defaultPlaybackSpeed, v);
 
+  /// Volume remembered from the last session (see `player_volume_memory.dart`).
+  double? get playerVolume => _storage.getDouble(StorageKeys.playerVolume);
+
+  Future<void> setPlayerVolume(double? v) =>
+      _storage.setDouble(StorageKeys.playerVolume, v);
+
   /// 字幕默认字号。Android 手机/平板屏幕较小且观看距离近，42 既清晰又不
   /// 占据过多画面；桌面端观看距离远、画面宽，保持 48。TV 走 ExoPlayer
   /// 独立渲染路径，此值主要影响 media_kit 的 SubtitleView。

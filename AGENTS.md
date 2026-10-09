@@ -41,7 +41,9 @@ Strategic and visual specs live at the project root. **Read both before any UI w
 
 - `flutter test` — full suite; playback matrix unit tests live in `test/`
   (`playback_resume_test.dart`, `bogus_position_guard_test.dart`,
-  `seek_step_test.dart`, `episode_navigation_test.dart`).
+  `seek_step_test.dart`, `seek_verification_test.dart`,
+  `episode_navigation_test.dart`, `prefetch_suspend_test.dart`,
+  `player_volume_memory_test.dart`).
 - `test/live_emby_playback_test.dart` — opt-in integration test against a real
   Emby/go-emby2openlist server (strm 307 chain, CDN Range seek, UA-binding
   contract, subtitle conversion, progress lifecycle). Skipped unless env vars

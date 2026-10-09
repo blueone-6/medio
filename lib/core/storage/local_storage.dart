@@ -13,6 +13,7 @@ abstract final class StorageKeys {
   static const themeBrightness = 'theme_brightness';
   static const localeCode = 'locale_code';
   static const defaultPlaybackSpeed = 'default_playback_speed';
+  static const playerVolume = 'player_volume';
   static const hardwareDecoding = 'hardware_decoding';
   static const subtitleFontSize = 'subtitle_font_size';
   static const subtitleOffsetMs = 'subtitle_offset_ms';
