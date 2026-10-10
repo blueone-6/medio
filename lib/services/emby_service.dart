@@ -595,7 +595,7 @@ class EmbyService {
   }) {
     if (strmViaEmbyProxy) {
       if (isExternalCdnPlaybackUrl(streamUrl)) {
-        return externalCdnPlaybackHttpHeaders();
+        return externalCdnPlaybackHttpHeadersForUrl(streamUrl);
       }
       return null;
     }

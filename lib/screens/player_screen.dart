@@ -38,6 +38,7 @@ import '../core/player/prefetch_suspend.dart';
 import '../core/player/player_subtitle_delay.dart';
 import '../core/player/player_mpv_properties.dart';
 import '../core/player/external_cdn_headers.dart';
+import '../core/player/netdisk_range_proxy.dart';
 import '../models/emby/emby_media_item.dart';
 import '../models/emby/emby_playback_info.dart';
 import '../models/emby/emby_subtitle_option.dart';
@@ -270,6 +271,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   /// Resume position for manual retry / recovery (ticks); overrides [hintPositionTicks].
   int? _resumeTicksOverride;
+
+  /// Localhost bounded-range proxy URL currently handed to mpv, when the
+  /// resolved CDN is a throttled netdisk CDN (Quark). Unregistered on the next
+  /// open / dispose so the signed upstream URL doesn't linger.
+  String? _activeProxyUrl;
 
   static const _maxNetworkRecoveryAttempts = 3;
 
@@ -859,6 +865,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _lastSeekAt = now;
     _lastUserSeekTarget = target;
     _lastUserSeekAt = now;
+    // Any new user seek invalidates a pending landing verification: its
+    // target and elapsed reference no longer describe THIS seek.
+    _cancelUserSeekVerification();
   }
 
   Future<void> _seekTo(Duration target) async {
@@ -1296,10 +1305,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       final tuneProbe = !isAndroidMobileUi &&
           normalizedBase.isNotEmpty &&
           isEmbyHostedStreamUrl(pb.streamUrl, normalizedBase);
+      _unregisterActiveProxy();
+      var openUrl = pb.streamUrl;
+      Map<String, String>? openHeaders = headers;
+      var externalCdn = isExternalCdnPlaybackUrl(pb.streamUrl);
+      final proxied = await _registerProxyFor(pb.streamUrl);
+      if (proxied != null) {
+        openUrl = proxied;
+        openHeaders = null;
+        externalCdn = false;
+      }
       await _openStream(
-        pb.streamUrl,
-        headers: headers,
-        externalCdn: isExternalCdnPlaybackUrl(pb.streamUrl),
+        openUrl,
+        headers: openHeaders,
+        externalCdn: externalCdn,
         tuneProbe: tuneProbe,
       );
     }
@@ -1626,10 +1645,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         final tuneProbe = !isAndroidMobileUi &&
             normalizedBase.isNotEmpty &&
             isEmbyHostedStreamUrl(pb.streamUrl, normalizedBase);
+        _unregisterActiveProxy();
+        var openUrl = pb.streamUrl;
+        Map<String, String>? openHeaders = headers;
+        var externalCdn = isExternalCdnPlaybackUrl(pb.streamUrl);
+        final proxied = await _registerProxyFor(pb.streamUrl);
+        if (proxied != null) {
+          openUrl = proxied;
+          openHeaders = null;
+          externalCdn = false;
+        }
         await _openStream(
-          pb.streamUrl,
-          headers: headers,
-          externalCdn: isExternalCdnPlaybackUrl(pb.streamUrl),
+          openUrl,
+          headers: openHeaders,
+          externalCdn: externalCdn,
           tuneProbe: tuneProbe,
         );
       }
@@ -2194,21 +2223,70 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       }
     }
     if (!mounted || _bootstrapCancelled) return;
-    final openUrl = picked ?? embyStreamUrl;
-    final mode = picked != null ? 'cdn_direct' : 'emby_307';
-    final headers = externalCdnPlaybackHttpHeaders();
+
+    _unregisterActiveProxy();
+    var openUrl = picked ?? embyStreamUrl;
+    Map<String, String>? headers;
+    var externalCdn = true;
+    var mode = picked != null ? 'cdn_direct' : 'emby_307';
+    if (picked != null) {
+      // Throttled netdisk CDNs (Quark) reject open-ended transfers - route
+      // through the localhost bounded-range proxy instead of opening directly.
+      final proxied = await _registerProxyFor(picked);
+      if (!mounted || _bootstrapCancelled) return;
+      if (proxied != null) {
+        openUrl = proxied;
+        headers = null;
+        externalCdn = false;
+        mode = 'cdn_proxy';
+      } else {
+        headers = externalCdnPlaybackHttpHeadersForUrl(picked);
+      }
+    } else {
+      headers = externalCdnPlaybackHttpHeaders();
+    }
 
     AppLog.instance.i(
       'Player',
       'strm playback: mode=$mode openUrl=${AppLog.redactUrl(openUrl)} '
-          'headers=${headers.keys.toList()}',
+          'headers=${headers?.keys.toList()}',
     );
     await _openStream(
       openUrl,
       headers: headers,
-      externalCdn: true,
+      externalCdn: externalCdn,
       tuneProbe: false,
     );
+  }
+
+  /// Routes a throttled-CDN [cdnUrl] through the localhost bounded-range proxy
+  /// when needed; returns the proxy URL, or null when the URL can be opened
+  /// directly (or the proxy failed - callers then fall back to direct open).
+  Future<String?> _registerProxyFor(String cdnUrl) async {
+    if (!needsBoundedRangeProxy(cdnUrl)) return null;
+    try {
+      final local = await NetdiskRangeProxy.instance.register(
+        upstreamUrl: cdnUrl,
+        headers: externalCdnPlaybackHttpHeadersForUrl(cdnUrl),
+      );
+      _unregisterActiveProxy();
+      _activeProxyUrl = local;
+      AppLog.instance.i(
+        'Player',
+        'throttled netdisk CDN -> range proxy ${AppLog.redactUrl(local)}',
+      );
+      return local;
+    } catch (e) {
+      AppLog.instance.w('Player', 'range proxy registration failed: $e');
+      return null;
+    }
+  }
+
+  void _unregisterActiveProxy() {
+    final url = _activeProxyUrl;
+    if (url == null) return;
+    NetdiskRangeProxy.instance.unregister(url);
+    _activeProxyUrl = null;
   }
 
   Future<void> _openStream(
@@ -3053,6 +3131,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   void dispose() {
     _cancelUserSeekVerification();
     _cancelNetworkRecovery();
+    _unregisterActiveProxy();
     _cancelAndroidResumeGuard?.call();
     _cancelAndroidResumeGuard = null;
     _playerErrorSub?.cancel();

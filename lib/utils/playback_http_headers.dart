@@ -7,7 +7,7 @@ Map<String, String>? playbackHttpHeaders(
   String? embyToken,
 }) {
   if (isExternalCdnPlaybackUrl(url)) {
-    return externalCdnPlaybackHttpHeaders();
+    return externalCdnPlaybackHttpHeadersForUrl(url);
   }
 
   if (embyServerBase != null &&

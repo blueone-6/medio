@@ -58,7 +58,10 @@ extension PlayerPlaybackHttpHeaders on Player {
     final headerBlock =
         normalizedHeaders.entries.map((e) => '${e.key}: ${e.value}').join('\r\n');
 
-    if (referer.isNotEmpty) await platform.setProperty('referrer', referer);
+    // Quark's CDN rejects requests with a `Referer` (403 Referer ACL), so a
+    // provider switch (115 → quark) must clear any previously set referrer
+    // instead of leaving the stale 115 value in place.
+    await platform.setProperty('referrer', referer.isNotEmpty ? referer : '');
     await platform.setProperty('user-agent', ua);
     await platform.setProperty('http-header-fields', headerBlock);
     // Do not use stream-lavf-o=headers=… — mpv splits lavf options on commas and

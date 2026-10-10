@@ -15,7 +15,8 @@
 //   A. authentication (AuthenticateByName / API key)
 //   B. PlaybackInfo with the app's real DeviceProfiles (desktop + android)
 //   C. strm proxy 307 resolve + CDN byte-range seek (head/middle/tail = Cues)
-//   D. 115 CDN UA binding contract (guards the client CDN-direct mode)
+//   D. 115 CDN UA binding contract (guards the client CDN-direct mode;
+//      skipped for Quark strm items, whose CDN rejects any Referer)
 //   E. subtitle streams: ASS original, server conversion to SRT/VTT
 //   F. progress reporting lifecycle: Started → Progress → Stopped → resume state
 //   G. StartTimeTicks resume echo on PlaybackInfo
@@ -81,7 +82,7 @@ Future<Map<String, dynamic>> _postJson(
   return text.isEmpty ? <String, dynamic>{} : jsonDecode(text) as Map<String, dynamic>;
 }
 
-Future<Map<String, dynamic>> _getJson(String path) async {
+Future<dynamic> _getJson(String path) async {
   final req = await _client.getUrl(_u(path));
   _authHeaders().forEach(req.headers.set);
   final res = await req.close();
@@ -89,7 +90,7 @@ Future<Map<String, dynamic>> _getJson(String path) async {
   if (res.statusCode != 200) {
     throw StateException('GET $path -> ${res.statusCode}: $text');
   }
-  return jsonDecode(text) as Map<String, dynamic>;
+  return jsonDecode(text);
 }
 
 class StateException implements Exception {
@@ -188,14 +189,19 @@ Future<Map<String, dynamic>> _playbackInfo(
 
 /// Resolves the strm redirect with the exact headers mpv will use
 /// (mirrors EmbyService.resolveExternalCdnUrl after the UA-binding fix).
+///
+/// Stops at the first netdisk CDN hop (115 or Quark); like the app, it never
+/// fetches the CDN itself while resolving.
 Future<String> _resolveCdnUrl(String embyStreamUrl, {String? ua}) async {
   var current = embyStreamUrl;
   for (var hop = 0; hop < 5; hop++) {
+    if (_isCdnHost(current)) return current;
     final uri = Uri.parse(current);
-    if (uri.host.contains('115cdn') || uri.host == '115.com') return current;
     final req = await _client.getUrl(uri);
     req.followRedirects = false;
     req.headers.set(HttpHeaders.userAgentHeader, ua ?? _chromeUa);
+    // 115 binds the signed URL to the resolving UA/Referer; Quark rejects any
+    // Referer. The Emby 307 hop ignores it either way.
     req.headers.set(HttpHeaders.refererHeader, _cdnReferer);
     final res = await req.close();
     if (res.isRedirect) {
@@ -214,6 +220,18 @@ Future<String> _resolveCdnUrl(String embyStreamUrl, {String? ua}) async {
   throw StateException('redirect chain exceeded 5 hops');
 }
 
+bool _is115Host(String url) {
+  final h = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+  return h.contains('115cdn') || h == '115.com' || h.endsWith('.115.com');
+}
+
+bool _isQuarkHost(String url) {
+  final h = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+  return h == 'quark.cn' || h.endsWith('.quark.cn');
+}
+
+bool _isCdnHost(String url) => _is115Host(url) || _isQuarkHost(url);
+
 Future<HttpClientResponse> _rangeGet(
   String url,
   int start,
@@ -223,7 +241,10 @@ Future<HttpClientResponse> _rangeGet(
   final req = await _client.getUrl(Uri.parse(url));
   req.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
   req.headers.set(HttpHeaders.userAgentHeader, ua ?? _chromeUa);
-  req.headers.set(HttpHeaders.refererHeader, _cdnReferer);
+  // Quark's CDN answers 403 when a Referer is present; only 115 needs it.
+  if (_is115Host(url)) {
+    req.headers.set(HttpHeaders.refererHeader, _cdnReferer);
+  }
   return req.close();
 }
 
@@ -253,9 +274,11 @@ void main() {
       expect(_apiKey, isNotNull,
           reason: 'Provide EMBY_LIVE_USER/PASS or EMBY_LIVE_API_KEY');
       _token = _apiKey;
-      // Discover user id via /emby/Users.
+      // Discover user id via /emby/Users (a bare array on Emby).
       final users = await _getJson('/emby/Users');
-      final list = users['Items'] as List<dynamic>? ?? users as List<dynamic>?;
+      final list = users is Map
+          ? users['Items'] as List<dynamic>?
+          : users as List<dynamic>?;
       _userId = (list!.first as Map<String, dynamic>)['Id'] as String;
     }
 
@@ -421,9 +444,15 @@ void main() {
       final url = '$_server/emby/Videos/$id/stream'
           '?MediaSourceId=mediasource_$id&X-Emby-Token=$_token';
 
+      final cdn = await _resolveCdnUrl(url);
+      if (!_is115Host(cdn)) {
+        markTestSkipped('resolved CDN is not 115 (${Uri.parse(cdn).host}) — '
+            'this UA/Referer-binding contract is 115-specific');
+        return;
+      }
+
       // Same UA for resolve + access → must succeed (the app's CDN-direct
       // mode relies on this after the resolveExternalCdnUrl fix).
-      final cdn = await _resolveCdnUrl(url);
       final ok = await _rangeGet(cdn, 0, 1023);
       expect(ok.statusCode, 206,
           reason: 'same-UA resolve+access must work for CDN-direct mode');

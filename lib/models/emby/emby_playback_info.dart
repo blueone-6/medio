@@ -320,6 +320,15 @@ bool needsEmbyStreamProxy(String url, String serverPublicBase) {
     return true;
   }
 
+  // Docker Compose service names (e.g. `openlist`, `moviepilot`) and other
+  // LAN-only names are single-label hostnames: a FQDN/IPv4 always contains a
+  // dot. Remote clients cannot resolve them, so playback must go through the
+  // Emby `/Videos/{id}/stream` proxy, which shares the server's Docker network
+  // and can reach the netdisk bridge (OpenList).
+  if (!host.contains('.')) {
+    return true;
+  }
+
   final path = uri.path.toLowerCase();
   if (path.contains('redirect_url') ||
       (path.contains('/plugin/') && path.contains('redirect'))) {

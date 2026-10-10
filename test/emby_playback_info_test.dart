@@ -285,6 +285,54 @@ void main() {
       );
     });
 
+    test('needsEmbyStreamProxy treats docker OpenList paths as proxy targets',
+        () {
+      // Quark strm items expose the OpenList bridge through a Compose service
+      // name (`openlist`) that a remote client cannot resolve — it must go
+      // through Emby's `/Videos/{id}/stream` proxy.
+      expect(
+        needsEmbyStreamProxy(
+          'http://openlist:5244/d/quarktv/%E5%9B%BD%E6%BC%AB/x.mp4',
+          'http://117.72.57.88:8095',
+        ),
+        isTrue,
+      );
+      // Public CDN / FQDN / IP hosts are opened directly.
+      expect(
+        needsEmbyStreamProxy(
+          'https://dl-c-zb-u.drive.quark.cn/x.mp4',
+          'http://117.72.57.88:8095',
+        ),
+        isFalse,
+      );
+    });
+
+    test('resolvePlaybackStreamUrl proxies openlist quark strm through Emby',
+        () {
+      const itemId = '6753';
+      const mediaSourceId = 'mediasource_6753';
+      const server = 'http://117.72.57.88:8095';
+
+      const info = EmbyPlaybackInfo(
+        playSessionId: 'session-1',
+        mediaSourceId: mediaSourceId,
+        streamUrl:
+            'http://openlist:5244/d/quarktv/x.mp4?api_key=tok',
+      );
+
+      final url = resolvePlaybackStreamUrl(
+        info: info,
+        itemId: itemId,
+        serverPublicBase: server,
+        accessToken: 'tok',
+      );
+
+      expect(url, contains('/emby/Videos/$itemId/stream'));
+      expect(url, isNot(contains('openlist')));
+      expect(url, contains('Static=true'));
+      expect(url, contains('X-Emby-Token=tok'));
+    });
+
     test('buildEmbySubtitleStreamUrl respects /emby in server base path', () {
       final url = buildEmbySubtitleStreamUrl(
         serverPublicBase: 'http://host:8096/emby',
