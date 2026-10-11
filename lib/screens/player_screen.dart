@@ -17,6 +17,7 @@ import '../core/player/apply_emby_subtitle.dart';
 import '../core/player/bogus_position_guard.dart';
 import '../core/player/seek_step.dart';
 import '../core/player/seek_verification.dart';
+import '../core/player/stall_classification.dart';
 import '../core/player/player_subtitle_visibility.dart';
 import '../core/player/select_embedded_subtitle.dart';
 import '../core/player/subtitle_switch_queue.dart';
@@ -241,6 +242,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   static const _maxStallRecoveryAttempts = 2;
   int _stallRecoveryAttempts = 0;
 
+  /// True while playback is paused because the app paused it on the user's
+  /// behalf (play/pause toggle, app backgrounding). The stall detector uses it
+  /// to tell a deliberate pause apart from a silent CDN stall, which also
+  /// leaves mpv in a paused-like (not playing, not buffering) state.
+  bool _userPaused = false;
+
   /// Consecutive failed recovery re-opens. Drives the backoff between
   /// `stop()` and the next open: rapid re-opens against the same CDN URL
   /// trip its per-URL connection management (production logs: seven opens
@@ -437,6 +444,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   /// Pause and flush the Emby progress before the process is frozen, so the
   /// server holds an accurate resume point for the frozen period.
   Future<void> _pauseForBackground() async {
+    _userPaused = true;
     try {
       await _player.pause();
     } catch (_) {}
@@ -733,27 +741,28 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       }
       final advance = pos - basePos;
 
+      final kind = classifyStalledPlayback(
+        position: pos,
+        basePosition: basePos,
+        playing: _player.state.playing,
+        buffering: _player.state.buffering,
+        userPaused: _userPaused,
+        advanceThreshold: _stallThreshold,
+      );
+
       // Position has advanced enough — playback is healthy. Re-arm with
       // the new base so we keep monitoring (catches stalls that develop
       // mid-playback or after a seek).
-      if (advance >= _stallThreshold) {
+      if (kind == StalledPlaybackKind.advancing) {
         _installStallDetector();
         return;
       }
 
-      // Position hasn't advanced. Distinguish CDN stall from user pause:
-      // - CDN stall: mpv's cache is empty → buffering=true
-      // - User pause: cache is healthy → buffering=false
-      //
-      // Fallback: if position is still near zero (< _stallThreshold), treat
-      // it as a stall regardless of buffering — this covers fresh-playback
-      // stalls where buffering might not be reported reliably on all
-      // platforms, and preserves the behavior from the original one-shot
-      // detector.
-      if (!_player.state.playing &&
-          !_player.state.buffering &&
-          pos >= _stallThreshold) {
-        // Likely a user pause — re-arm but don't trigger recovery.
+      // A pause the user actually asked for (or that app backgrounding caused)
+      // legitimately holds the position still — re-arm without recovering.
+      // Anything else is a silent stall (e.g. the CDN dropped the connection
+      // and mpv ended up not playing and not buffering) and must be recovered.
+      if (kind == StalledPlaybackKind.userPaused) {
         _installStallDetector();
         return;
       }
@@ -763,6 +772,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         'stall detected: pos=${pos.inMilliseconds}ms '
             'advance=${advance.inMilliseconds}ms '
             'buffering=${_player.state.buffering} '
+            'playing=${_player.state.playing} '
+            'userPaused=$_userPaused '
             'after ${_stallDelay.inSeconds}s - attempting recovery',
       );
       _handlePlaybackStall();
@@ -871,6 +882,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _cancelUserSeekVerification();
   }
 
+  /// Toggles play/pause on the user's behalf, tracking [_userPaused] so the
+  /// stall detector can distinguish this deliberate pause from a silent stall.
+  void _togglePlayPause() {
+    if (_player.state.playing) {
+      _userPaused = true;
+      unawaited(_player.pause());
+    } else {
+      _userPaused = false;
+      unawaited(_player.play());
+    }
+    _onUserInteraction();
+  }
+
   Future<void> _seekTo(Duration target) async {
     _cancelUserSeekVerification();
     _markUserSeek(target);
@@ -905,6 +929,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     }
     _stallRecoveryAttempts++;
     _cancelUserSeekVerification();
+
+    // Recovery re-opens the stream automatically — clear any stale user-pause
+    // latch so a later frozen position isn't excused as a deliberate pause.
+    _userPaused = false;
 
     final recoveryPosition = resumeAt ?? _effectivePlaybackPosition();
     _resumeTicksOverride = recoveryPosition == null
@@ -2137,6 +2165,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _volumeAdjustAnchor = restoredVolume;
     _startVolumePersistence();
 
+    _userPaused = false;
     await _player.play();
     await _player.setRate(speed);
   }
@@ -2953,6 +2982,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         // Seek first: media_kit's seek() resets state.completed (→ false), so
         // the play() below won't hit its "completed → seek(0)" branch.
         await _player.seek(before);
+        _userPaused = false;
         await _player.play();
       } catch (e, st) {
         AppLog.instance.e(
@@ -3549,14 +3579,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
     return TvRemoteActions(
       onBack: _leavePlayer,
-      onPlayPause: () {
-        if (_player.state.playing) {
-          _player.pause();
-        } else {
-          _player.play();
-        }
-        _onUserInteraction();
-      },
+      onPlayPause: _togglePlayPause,
       onFastForward: () {
         _onArrowDown(1, 30);
         _commitSeek();
@@ -3613,12 +3636,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
           }
           if (event is! KeyDownEvent) return KeyEventResult.ignored;
           if (event.logicalKey == LogicalKeyboardKey.space) {
-            if (_player.state.playing) {
-              _player.pause();
-            } else {
-              _player.play();
-            }
-            _onUserInteraction();
+            _togglePlayPause();
             return KeyEventResult.handled;
           }
           if (event.logicalKey == LogicalKeyboardKey.escape) {
