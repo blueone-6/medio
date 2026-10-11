@@ -15,7 +15,8 @@ import '../core/player/tv_exo/tv_exo_player.dart';
 import '../core/player/tv_exo/tv_exo_video_view.dart';
 import '../core/tv/tv_remote_actions.dart' show TvRemoteActions, TvRemoteSelectKeys;
 import '../core/player/external_cdn_headers.dart';
-import '../core/player/netdisk_range_proxy.dart';
+import '../core/player/netdisk_transport.dart';
+import '../core/player/netdisk_types.dart';
 import '../models/emby/emby_media_item.dart';
 import '../models/emby/emby_playback_info.dart';
 import '../providers/settings_provider.dart';
@@ -59,8 +60,8 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
   EmbyPlaybackInfo? _info;
   EmbyMediaItem? _currentItem;
 
-  /// Localhost bounded-range proxy URL currently handed to ExoPlayer, when the
-  /// resolved CDN is a throttled netdisk CDN (Quark).
+  /// Localhost netdisk transport URL currently handed to ExoPlayer, when the
+  /// stream is routed through [NetdiskTransport].
   String? _activeProxyUrl;
 
   bool _loading = true;
@@ -246,32 +247,46 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
     });
   }
 
-  /// Resolves a strm item's CDN target and, when it is a throttled netdisk CDN
-  /// (Quark), registers it with the localhost bounded-range proxy. Returns the
-  /// proxy URL, or null when the stream should open directly.
-  Future<String?> _proxyUrlForStrm(EmbyPlaybackInfo pb) async {
-    if (!pb.strmViaEmbyStream) return null;
+  /// Registers a netdisk/strm upstream with [NetdiskTransport] and returns the
+  /// localhost URL, or null when the stream should open directly. The transport
+  /// owns per-CDN headers, bounded ranges, disk caching, and transparent
+  /// re-resolution of expired signed URLs.
+  Future<String?> _transportUrlFor(EmbyPlaybackInfo pb) async {
     final emby = _emby;
-    if (emby == null) return null;
+    final strm = pb.strmViaEmbyStream;
+    final external = isExternalCdnPlaybackUrl(pb.streamUrl);
+    if (emby == null || (!strm && !external)) return null;
     try {
-      final resolved = await emby.resolveExternalCdnUrl(pb.streamUrl);
-      if (!isExternalCdnPlaybackUrl(resolved) ||
-          !needsBoundedRangeProxy(resolved)) {
-        return null;
+      var upstream = pb.streamUrl;
+      Map<String, String> headers;
+      Future<ResolvedStreamTarget> Function()? refresh;
+      if (strm) {
+        final resolved = await emby.resolveExternalCdnUrl(pb.streamUrl);
+        if (isExternalCdnPlaybackUrl(resolved)) {
+          upstream = resolved;
+          headers = externalCdnPlaybackHttpHeadersForUrl(resolved);
+        } else {
+          headers = externalCdnPlaybackHttpHeaders();
+        }
+        refresh = () => emby.reResolveCdnTarget(pb.streamUrl);
+      } else {
+        headers = externalCdnPlaybackHttpHeadersForUrl(pb.streamUrl);
       }
       _unregisterActiveProxy();
-      final local = await NetdiskRangeProxy.instance.register(
-        upstreamUrl: resolved,
-        headers: externalCdnPlaybackHttpHeadersForUrl(resolved),
+      final local = await NetdiskTransport.instance.register(
+        upstreamUrl: upstream,
+        headers: headers,
+        cacheKey: '${widget.itemId}/${pb.mediaSourceId}',
+        refresh: refresh,
       );
       _activeProxyUrl = local;
       AppLog.instance.i(
         'TvPlayer',
-        'throttled strm CDN -> range proxy ${AppLog.redactUrl(local)}',
+        'netdisk transport route ${AppLog.redactUrl(local)}',
       );
       return local;
     } catch (e) {
-      AppLog.instance.w('TvPlayer', 'strm CDN resolve failed: $e');
+      AppLog.instance.w('TvPlayer', 'transport registration failed: $e');
       return null;
     }
   }
@@ -279,7 +294,7 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
   void _unregisterActiveProxy() {
     final url = _activeProxyUrl;
     if (url == null) return;
-    NetdiskRangeProxy.instance.unregister(url);
+    NetdiskTransport.instance.unregister(url);
     _activeProxyUrl = null;
   }
 
@@ -319,7 +334,7 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
       var openUrl = pb.streamUrl;
       if (!mounted) return;
 
-      final proxyUrl = await _proxyUrlForStrm(pb);
+      final proxyUrl = await _transportUrlFor(pb);
       if (!mounted) return;
       if (proxyUrl != null) openUrl = proxyUrl;
 
@@ -473,7 +488,7 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
       if (!mounted) return;
 
       final settings = ref.read(settingsServiceProvider);
-      final proxyUrl = await _proxyUrlForStrm(pb);
+      final proxyUrl = await _transportUrlFor(pb);
       if (!mounted) return;
       if (proxyUrl != null) openUrl = proxyUrl;
 

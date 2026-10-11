@@ -38,7 +38,8 @@ import '../core/player/prefetch_suspend.dart';
 import '../core/player/player_subtitle_delay.dart';
 import '../core/player/player_mpv_properties.dart';
 import '../core/player/external_cdn_headers.dart';
-import '../core/player/netdisk_range_proxy.dart';
+import '../core/player/netdisk_transport.dart';
+import '../core/player/netdisk_types.dart';
 import '../models/emby/emby_media_item.dart';
 import '../models/emby/emby_playback_info.dart';
 import '../models/emby/emby_subtitle_option.dart';
@@ -1309,11 +1310,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       var openUrl = pb.streamUrl;
       Map<String, String>? openHeaders = headers;
       var externalCdn = isExternalCdnPlaybackUrl(pb.streamUrl);
-      final proxied = await _registerProxyFor(pb.streamUrl);
-      if (proxied != null) {
-        openUrl = proxied;
-        openHeaders = null;
-        externalCdn = false;
+      if (externalCdn) {
+        final local = await _registerTransport(
+          upstreamUrl: pb.streamUrl,
+          headers: externalCdnPlaybackHttpHeadersForUrl(pb.streamUrl),
+        );
+        if (local != null) {
+          openUrl = local;
+          openHeaders = null;
+          externalCdn = false;
+        }
       }
       await _openStream(
         openUrl,
@@ -1649,11 +1655,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         var openUrl = pb.streamUrl;
         Map<String, String>? openHeaders = headers;
         var externalCdn = isExternalCdnPlaybackUrl(pb.streamUrl);
-        final proxied = await _registerProxyFor(pb.streamUrl);
-        if (proxied != null) {
-          openUrl = proxied;
-          openHeaders = null;
-          externalCdn = false;
+        if (externalCdn) {
+          final local = await _registerTransport(
+            upstreamUrl: pb.streamUrl,
+            headers: externalCdnPlaybackHttpHeadersForUrl(pb.streamUrl),
+          );
+          if (local != null) {
+            openUrl = local;
+            openHeaders = null;
+            externalCdn = false;
+          }
         }
         await _openStream(
           openUrl,
@@ -2225,67 +2236,68 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     if (!mounted || _bootstrapCancelled) return;
 
     _unregisterActiveProxy();
-    var openUrl = picked ?? embyStreamUrl;
-    Map<String, String>? headers;
-    var externalCdn = true;
-    var mode = picked != null ? 'cdn_direct' : 'emby_307';
-    if (picked != null) {
-      // Throttled netdisk CDNs (Quark) reject open-ended transfers - route
-      // through the localhost bounded-range proxy instead of opening directly.
-      final proxied = await _registerProxyFor(picked);
-      if (!mounted || _bootstrapCancelled) return;
-      if (proxied != null) {
-        openUrl = proxied;
-        headers = null;
-        externalCdn = false;
-        mode = 'cdn_proxy';
-      } else {
-        headers = externalCdnPlaybackHttpHeadersForUrl(picked);
-      }
-    } else {
-      headers = externalCdnPlaybackHttpHeaders();
-    }
+    final headers = picked != null
+        ? externalCdnPlaybackHttpHeadersForUrl(picked)
+        : externalCdnPlaybackHttpHeaders();
+    final local = await _registerTransport(
+      upstreamUrl: picked ?? embyStreamUrl,
+      headers: headers,
+      refresh: () => emby.reResolveCdnTarget(embyStreamUrl),
+    );
+    if (!mounted || _bootstrapCancelled) return;
 
+    final openUrl = local ?? (picked ?? embyStreamUrl);
     AppLog.instance.i(
       'Player',
-      'strm playback: mode=$mode openUrl=${AppLog.redactUrl(openUrl)} '
-          'headers=${headers?.keys.toList()}',
+      'strm playback: mode=${local != null ? 'transport' : 'direct'} '
+          'openUrl=${AppLog.redactUrl(openUrl)}',
     );
     await _openStream(
       openUrl,
-      headers: headers,
-      externalCdn: externalCdn,
+      // The transport owns headers/ranges; a failed registration falls back to
+      // a direct CDN open with its own headers.
+      headers: local != null ? null : headers,
+      externalCdn: local == null,
       tuneProbe: false,
     );
   }
 
-  /// Routes a throttled-CDN [cdnUrl] through the localhost bounded-range proxy
-  /// when needed; returns the proxy URL, or null when the URL can be opened
-  /// directly (or the proxy failed - callers then fall back to direct open).
-  Future<String?> _registerProxyFor(String cdnUrl) async {
-    if (!needsBoundedRangeProxy(cdnUrl)) return null;
+  /// Registers a netdisk/strm upstream with [NetdiskTransport] and returns the
+  /// localhost URL, or null when registration fails (callers then fall back to
+  /// a direct open). The transport owns per-CDN headers, bounded ranges, disk
+  /// caching, and transparent re-resolution of expired signed URLs.
+  Future<String?> _registerTransport({
+    required String upstreamUrl,
+    required Map<String, String> headers,
+    Future<ResolvedStreamTarget> Function()? refresh,
+  }) async {
     try {
-      final local = await NetdiskRangeProxy.instance.register(
-        upstreamUrl: cdnUrl,
-        headers: externalCdnPlaybackHttpHeadersForUrl(cdnUrl),
+      final local = await NetdiskTransport.instance.register(
+        upstreamUrl: upstreamUrl,
+        headers: headers,
+        cacheKey: _cacheKey,
+        refresh: refresh,
       );
-      _unregisterActiveProxy();
       _activeProxyUrl = local;
       AppLog.instance.i(
         'Player',
-        'throttled netdisk CDN -> range proxy ${AppLog.redactUrl(local)}',
+        'netdisk transport route ${AppLog.redactUrl(local)}',
       );
       return local;
     } catch (e) {
-      AppLog.instance.w('Player', 'range proxy registration failed: $e');
+      AppLog.instance.w('Player', 'transport registration failed: $e');
       return null;
     }
   }
 
+  /// Stable per-media cache key; survives signed-URL re-resolution. The
+  /// play-session id is deliberately excluded (it changes every session).
+  String get _cacheKey => '${widget.itemId}/${_info?.mediaSourceId ?? '0'}';
+
   void _unregisterActiveProxy() {
     final url = _activeProxyUrl;
     if (url == null) return;
-    NetdiskRangeProxy.instance.unregister(url);
+    NetdiskTransport.instance.unregister(url);
     _activeProxyUrl = null;
   }
 

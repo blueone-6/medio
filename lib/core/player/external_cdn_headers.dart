@@ -40,13 +40,6 @@ bool is115CdnPlaybackUrl(String url) =>
 bool isQuarkCdnPlaybackUrl(String url) =>
     classifyExternalCdnUrl(url) == ExternalCdnKind.quark;
 
-/// True for netdisk CDNs that throttle open-ended (whole-file) HTTP transfers to
-/// a crawl but serve bounded byte-range requests at full speed.
-///
-/// Playback of these must be routed through the localhost bounded-range proxy
-/// (`NetdiskRangeProxy`) instead of opening the CDN URL directly.
-bool needsBoundedRangeProxy(String url) => isQuarkCdnPlaybackUrl(url);
-
 /// Headers mpv must send for [url]'s CDN.
 ///
 /// - 115: hotlink `Referer`/`Origin` plus the shared UA (the signed URL is

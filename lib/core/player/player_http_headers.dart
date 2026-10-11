@@ -118,6 +118,7 @@ extension PlayerPlaybackHttpHeaders on Player {
       await platform.setProperty('cache-secs', '');
       await platform.setProperty('demuxer-max-bytes', '');
       await platform.setProperty('demuxer-readahead-secs', '');
+      await platform.setProperty('stream-lavf-o', '');
       return;
     }
     await platform.setProperty('cache', 'yes');
@@ -133,5 +134,14 @@ extension PlayerPlaybackHttpHeaders on Player {
     // URLs (e.g. MoviePilot P115StrmHelper). Default mpv timeout is too short,
     // causing 'Failed to open' before the 307 redirect arrives.
     await platform.setProperty('network-timeout', '60');
+    // Reconnect transient CDN drops at libavformat's HTTP layer (this path is
+    // for non-proxied Emby-hosted streams; netdisk CDNs go through
+    // NetdiskTransport, which owns its own upstream retry). Values carry no
+    // commas, so the stream-lavf-o comma-splitting trap (see line above) does
+    // not apply.
+    await platform.setProperty(
+      'stream-lavf-o',
+      'reconnect=1,reconnect_streamed=1,reconnect_delay_max=7',
+    );
   }
 }

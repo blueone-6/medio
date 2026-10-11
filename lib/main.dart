@@ -10,6 +10,8 @@ import 'core/storage/local_storage.dart';
 import 'core/layout/platform_layout.dart';
 import 'core/tv/tv_detection.dart';
 import 'providers/settings_provider.dart';
+import 'services/settings_service.dart';
+import 'startup/netdisk_cache_setup.dart';
 import 'startup/window_stub.dart' if (dart.library.io) 'startup/window_io.dart' as window;
 
 Future<void> main() async {
@@ -28,6 +30,7 @@ Future<void> main() async {
     }
 
     final storage = await LocalStorage.open();
+    await configureNetdiskCache(SettingsService(storage), startupDeviceType());
 
     runApp(
       ProviderScope(

@@ -1,0 +1,222 @@
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:media_client/core/player/netdisk_block_cache.dart';
+import 'package:media_client/core/player/netdisk_transport.dart';
+import 'package:media_client/core/player/netdisk_types.dart';
+
+/// Fake CDN that serves explicit byte ranges, records every Range header it
+/// receives, and can be switched into 403 / 307 modes.
+void main() {
+  const total = 9 * 1024 * 1024; // > 2 transport chunks
+  late Uint8List body;
+  late HttpServer upstream;
+  late int port;
+  late String mode;
+  late int requestCount;
+  final ranges = <String?>[];
+
+  setUp(() async {
+    body = Uint8List.fromList(List<int>.generate(total, (i) => i & 0xff));
+    ranges.clear();
+    requestCount = 0;
+    mode = 'range';
+    upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    port = upstream.port;
+    upstream.listen((req) async {
+      requestCount++;
+      if (mode == '307' && req.uri.path == '/stream') {
+        req.response.statusCode = HttpStatus.temporaryRedirect;
+        req.response.headers
+            .set(HttpHeaders.locationHeader, 'http://127.0.0.1:$port/file.mp4');
+        await req.response.close();
+        return;
+      }
+      if (mode == '403once' && requestCount == 1) {
+        req.response.statusCode = HttpStatus.forbidden;
+        await req.response.close();
+        return;
+      }
+      final range = req.headers.value(HttpHeaders.rangeHeader);
+      ranges.add(range);
+      var start = 0;
+      var end = total - 1;
+      if (range != null) {
+        final m = RegExp(r'bytes=(\d+)-(\d*)').firstMatch(range)!;
+        start = int.parse(m.group(1)!);
+        final e = m.group(2);
+        if (e != null && e.isNotEmpty) end = int.parse(e);
+        if (end >= total) end = total - 1;
+        req.response.statusCode = HttpStatus.partialContent;
+        req.response.headers
+            .set(HttpHeaders.contentRangeHeader, 'bytes $start-$end/$total');
+      } else {
+        req.response.statusCode = HttpStatus.ok;
+        req.response.headers.set(HttpHeaders.contentLengthHeader, '$total');
+      }
+      req.response.headers.contentType = ContentType('video', 'mp4');
+      req.response.add(body.sublist(start, end + 1));
+      await req.response.close();
+    });
+  });
+
+  tearDown(() async {
+    await NetdiskTransport.instance.dispose();
+    NetdiskTransport.instance.cache = null;
+    await upstream.close(force: true);
+  });
+
+  test('open-ended request is served via bounded upstream ranges', () async {
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      headers: {'User-Agent': 'medio-test'},
+      cacheKey: 'item/1',
+    );
+
+    final bytes = await _get(local);
+    expect(bytes.length, total);
+    expect(bytes.sublist(0, 64), body.sublist(0, 64));
+    expect(bytes.sublist(total - 64), body.sublist(total - 64));
+
+    expect(ranges, isNotEmpty);
+    for (final r in ranges) {
+      expect(r, isNotNull);
+      expect(RegExp(r'^bytes=\d+-\d+$').hasMatch(r!), isTrue,
+          reason: 'upstream saw open-ended range: $r');
+    }
+    expect(ranges.first, 'bytes=0-${NetdiskTransport.chunkSize - 1}');
+    expect(ranges.length, greaterThan(1));
+  });
+
+  test('bounded client range returns exact bytes and content-range', () async {
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/2',
+    );
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(local));
+    req.headers.set(HttpHeaders.rangeHeader, 'bytes=10-29');
+    final resp = await req.close();
+    expect(resp.statusCode, HttpStatus.partialContent);
+    expect(resp.headers.value('content-range'), 'bytes 10-29/$total');
+    final bytes = await _collect(resp);
+    client.close(force: true);
+    expect(bytes, body.sublist(10, 30));
+  });
+
+  test('unregistered routes return 404', () async {
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/3',
+    );
+    NetdiskTransport.instance.unregister(local);
+    final client = HttpClient();
+    final resp = await (await client.getUrl(Uri.parse(local))).close();
+    expect(resp.statusCode, HttpStatus.notFound);
+    await resp.drain<void>();
+    client.close(force: true);
+  });
+
+  test('serves blocks from the disk cache on a second play', () async {
+    final cacheDir = await Directory.systemTemp.createTemp('netdisk_cache_2nd');
+    addTearDown(() async {
+      if (await cacheDir.exists()) await cacheDir.delete(recursive: true);
+    });
+    NetdiskTransport.instance.cache =
+        NetdiskBlockCache(rootDir: cacheDir, limitBytes: 64 * 1024 * 1024);
+
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/cached',
+    );
+    final first = await _get(local);
+    expect(first.length, total);
+    expect(ranges, isNotEmpty);
+
+    ranges.clear();
+    final second = await _get(local);
+    expect(second.length, total);
+    expect(second.sublist(0, 64), body.sublist(0, 64));
+    // Everything came from disk: no new upstream range requests.
+    expect(ranges, isEmpty);
+  });
+
+  test('transparently re-resolves on 403 and retries the segment', () async {
+    mode = '403once';
+    final upstreamUrl = 'http://127.0.0.1:$port/movie.mp4';
+    var refreshes = 0;
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: upstreamUrl,
+      cacheKey: 'item/resolve',
+      refresh: () async {
+        refreshes++;
+        return ResolvedStreamTarget(url: upstreamUrl);
+      },
+    );
+    final bytes = await _get(local);
+    expect(bytes.length, total);
+    expect(refreshes, 1);
+  });
+
+  test('follows a 307 redirect itself', () async {
+    mode = '307';
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/stream',
+      cacheKey: 'item/redirect',
+    );
+    final bytes = await _get(local);
+    expect(bytes.length, total);
+    expect(bytes.sublist(0, 64), body.sublist(0, 64));
+  });
+
+  test('cache hit still answers ranged requests with 206 + content-range',
+      () async {
+    final cacheDir = await Directory.systemTemp.createTemp('netdisk_cache_seek');
+    addTearDown(() async {
+      if (await cacheDir.exists()) await cacheDir.delete(recursive: true);
+    });
+    final cache =
+        NetdiskBlockCache(rootDir: cacheDir, limitBytes: 64 * 1024 * 1024);
+    NetdiskTransport.instance.cache = cache;
+    // Seed block 0 and the total, as an earlier play would have.
+    await cache.write(
+      'item/seek',
+      0,
+      Uint8List.sublistView(body, 0, NetdiskTransport.chunkSize),
+    );
+    await cache.writeTotal('item/seek', total);
+
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/seek',
+    );
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(local));
+    req.headers.set(HttpHeaders.rangeHeader, 'bytes=10-29');
+    final resp = await req.close();
+    expect(resp.statusCode, HttpStatus.partialContent);
+    expect(resp.headers.value('content-range'), 'bytes 10-29/$total');
+    final got = await _collect(resp);
+    client.close(force: true);
+    expect(got, body.sublist(10, 30));
+    // Served entirely from cache: no upstream range requests.
+    expect(ranges, isEmpty);
+  });
+}
+
+Future<List<int>> _get(String url) async {
+  final client = HttpClient();
+  final resp = await (await client.getUrl(Uri.parse(url))).close();
+  final bytes = await _collect(resp);
+  client.close(force: true);
+  return bytes;
+}
+
+Future<List<int>> _collect(HttpClientResponse resp) async {
+  final out = <int>[];
+  await for (final chunk in resp) {
+    out.addAll(chunk);
+  }
+  return out;
+}

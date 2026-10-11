@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../core/layout/platform_layout.dart';
+import '../core/player/netdisk_cache_defaults.dart';
 import '../core/storage/local_storage.dart';
 import '../core/theme/app_theme.dart';
 
@@ -106,6 +107,33 @@ class SettingsService {
 
   Future<void> setAutoPlayNext(bool v) =>
       _storage.setBool(StorageKeys.autoPlayNext, v);
+
+  // ── 网盘播放磁盘块缓存 ──
+
+  /// Cache size bounds (MiB). 0 disables the cache entirely.
+  static const int netdiskCacheLimitMbMin = 0;
+  static const int netdiskCacheLimitMbMax = 20480;
+
+  /// Whether the netdisk block cache is enabled. Defaults from [type]
+  /// (TV off, others on).
+  bool netdiskCacheEnabledFor(DeviceType type) =>
+      _storage.getBool(StorageKeys.netdiskCacheEnabled) ??
+      defaultNetdiskCacheEnabled(type);
+
+  Future<void> setNetdiskCacheEnabled(bool v) =>
+      _storage.setBool(StorageKeys.netdiskCacheEnabled, v);
+
+  /// Cache cap in MiB. Defaults from [type].
+  int netdiskCacheLimitMbFor(DeviceType type) {
+    final raw = _storage.getInt(StorageKeys.netdiskCacheLimitMb) ??
+        defaultNetdiskCacheLimitMb(type);
+    return raw.clamp(netdiskCacheLimitMbMin, netdiskCacheLimitMbMax);
+  }
+
+  Future<void> setNetdiskCacheLimitMb(int v) => _storage.setInt(
+        StorageKeys.netdiskCacheLimitMb,
+        v.clamp(netdiskCacheLimitMbMin, netdiskCacheLimitMbMax),
+      );
 
   // ── 主题设置 ──
 

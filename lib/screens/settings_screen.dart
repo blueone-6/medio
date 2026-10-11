@@ -8,6 +8,7 @@ import '../providers/home_hub_section_provider.dart';
 import '../providers/home_recommendation_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/settings_service.dart';
+import '../startup/netdisk_cache_setup.dart';
 import '../core/theme/app_spacing.dart';
 import '../widgets/settings/desktop_shortcuts_settings_group.dart';
 import '../widgets/settings/settings_list_tile.dart';
@@ -48,6 +49,11 @@ class SettingsScreen extends ConsumerWidget {
           _TvHomeRecentPlayLimitTile(settings: settings, ref: ref, order: 2),
           _TvRecentAddedWindowTile(settings: settings, ref: ref, order: 3),
           _TvSubtitleFontSizeTile(settings: settings, order: 4),
+          _TvNetdiskCacheTile(
+            settings: settings,
+            type: context.deviceType,
+            order: 4.5,
+          ),
           TvFocusListTile(
             traversalOrder: 5,
             icon: Icons.palette_outlined,
@@ -109,6 +115,7 @@ class SettingsScreen extends ConsumerWidget {
             _HomeRecentPlayLimitTile(settings: settings, ref: ref),
             _RecentAddedWindowTile(settings: settings, ref: ref),
             _SubtitleFontSizeTile(settings: settings),
+            _NetdiskCacheTile(settings: settings, type: context.deviceType),
           ],
         ),
         SettingsListGroup(
@@ -536,6 +543,156 @@ class _SubtitleFontSizeTileState extends State<_SubtitleFontSizeTile> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 网盘播放磁盘块缓存设置（手机 / 平板 / 嵌入式）。
+class _NetdiskCacheTile extends StatefulWidget {
+  const _NetdiskCacheTile({required this.settings, required this.type});
+
+  final SettingsService settings;
+  final DeviceType type;
+
+  @override
+  State<_NetdiskCacheTile> createState() => _NetdiskCacheTileState();
+}
+
+class _NetdiskCacheTileState extends State<_NetdiskCacheTile> {
+  late bool _enabled;
+  late double _limit;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.settings.netdiskCacheEnabledFor(widget.type);
+    _limit = widget.settings.netdiskCacheLimitMbFor(widget.type).toDouble();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.sd_storage_outlined,
+                  size: 22, color: cs.onSurfaceVariant),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('网盘播放缓存',
+                        style: Theme.of(context).textTheme.titleSmall),
+                    Text(
+                      _enabled ? '已开启 · 上限 ${_limit.toInt()} MB' : '已关闭（不写入磁盘）',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: _enabled,
+                onChanged: (v) async {
+                  setState(() => _enabled = v);
+                  await widget.settings.setNetdiskCacheEnabled(v);
+                  await configureNetdiskCache(widget.settings, widget.type);
+                },
+              ),
+            ],
+          ),
+          if (_enabled) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Slider(
+              value: _limit.clamp(256, 20480),
+              min: 256,
+              max: 20480,
+              divisions: 79,
+              label: '${_limit.toInt()} MB',
+              onChanged: (v) => setState(() => _limit = v),
+              onChangeEnd: (v) async {
+                final n = v.round();
+                await widget.settings.setNetdiskCacheLimitMb(n);
+                await configureNetdiskCache(widget.settings, widget.type);
+                if (mounted) setState(() => _limit = n.toDouble());
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 网盘播放磁盘块缓存设置（TV / D-Pad）。
+class _TvNetdiskCacheTile extends StatefulWidget {
+  const _TvNetdiskCacheTile({
+    required this.settings,
+    required this.type,
+    required this.order,
+  });
+
+  final SettingsService settings;
+  final DeviceType type;
+  final double order;
+
+  @override
+  State<_TvNetdiskCacheTile> createState() => _TvNetdiskCacheTileState();
+}
+
+class _TvNetdiskCacheTileState extends State<_TvNetdiskCacheTile> {
+  late bool _enabled;
+  late double _limit;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.settings.netdiskCacheEnabledFor(widget.type);
+    _limit = widget.settings.netdiskCacheLimitMbFor(widget.type).toDouble();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        TvFocusListTile(
+          traversalOrder: widget.order,
+          icon: Icons.sd_storage_outlined,
+          title: '网盘播放缓存',
+          subtitle: _enabled ? '已开启 · 上限 ${_limit.toInt()} MB' : '已关闭（不写入磁盘）',
+          onActivate: () async {
+            setState(() => _enabled = !_enabled);
+            await widget.settings.setNetdiskCacheEnabled(_enabled);
+            await configureNetdiskCache(widget.settings, widget.type);
+          },
+        ),
+        if (_enabled)
+          TvFocusSlider(
+            traversalOrder: widget.order + 0.01,
+            icon: Icons.sd_storage_outlined,
+            label: '缓存上限',
+            value: _limit.clamp(256, 20480),
+            min: 256,
+            max: 20480,
+            divisions: 79,
+            valueLabel: '${_limit.toInt()} MB',
+            onChanged: (v) => setState(() => _limit = v),
+            onChangeEnd: (v) async {
+              final n = v.round();
+              await widget.settings.setNetdiskCacheLimitMb(n);
+              await configureNetdiskCache(widget.settings, widget.type);
+              if (mounted) setState(() => _limit = n.toDouble());
+            },
+          ),
+      ],
     );
   }
 }

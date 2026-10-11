@@ -17,6 +17,7 @@ import '../models/emby/emby_user.dart';
 import '../utils/emby_item_type.dart';
 import '../utils/emby_server_url.dart';
 import '../core/player/external_cdn_headers.dart';
+import '../core/player/netdisk_types.dart';
 import '../utils/playback_http_headers.dart';
 import '../utils/stream_redirect.dart';
 import 'settings_service.dart';
@@ -586,6 +587,17 @@ class EmbyService {
       'resolve ${AppLog.redactUrl(resolved)}',
     );
     return resolved;
+  }
+
+  /// Re-resolves a strm/redirect stream into a fresh upstream target (URL +
+  /// the headers it needs). Used by the netdisk transport's `refresh` callback
+  /// when a signed CDN URL expires mid-playback.
+  Future<ResolvedStreamTarget> reResolveCdnTarget(String embyStreamUrl) async {
+    final resolved = await resolveExternalCdnUrl(embyStreamUrl);
+    final headers = isExternalCdnPlaybackUrl(resolved)
+        ? externalCdnPlaybackHttpHeadersForUrl(resolved)
+        : externalCdnPlaybackHttpHeaders();
+    return ResolvedStreamTarget(url: resolved, headers: headers);
   }
 
   /// Auth / CDN headers for [media_kit] playback.
