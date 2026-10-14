@@ -752,8 +752,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
       // Position has advanced enough — playback is healthy. Re-arm with
       // the new base so we keep monitoring (catches stalls that develop
-      // mid-playback or after a seek).
+      // mid-playback or after a seek). Genuine advancement also refills the
+      // recovery retry budget, so a transient stall that recovered and then
+      // played on doesn't count against a later one.
       if (kind == StalledPlaybackKind.advancing) {
+        if (_stallRecoveryAttempts != 0) {
+          _stallRecoveryAttempts = 0;
+        }
         _installStallDetector();
         return;
       }
@@ -2562,16 +2567,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   Future<void> _reportProgressOnce(EmbyPlaybackInfo i, EmbyService emby) async {
     if (_playbackReportedStopped) return;
-    // Cancel stall detector once playback is confirmed progressing.
+    // Do NOT cancel the stall detector here. It is a continuous monitor that
+    // re-arms itself (see _installStallDetector), but this path runs every 10s
+    // with pos > 0, so cancelling it disabled stall recovery for the rest of
+    // the session. Production: a 4K strm froze at 169s for ~47s with the
+    // detector already cancelled and attempts still 0/2.
     final pos = _effectivePlaybackPosition();
-    if (pos != null && pos >= _stallThreshold) {
-      _cancelStallDetector();
-      // Reset stall recovery counter — playback is healthy now, so a future
-      // stall in this session should get a fresh retry budget.
-      if (_stallRecoveryAttempts != 0) {
-        _stallRecoveryAttempts = 0;
-      }
-    }
     final ticks = pos == null
         ? (_lastReportedPositionTicks ?? 0)
         : (pos.inMicroseconds * 10).clamp(0, 1 << 62).toInt();
