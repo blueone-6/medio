@@ -54,8 +54,19 @@ class HomeSectionHeader extends StatelessWidget {
     }
 
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
+        // Sharp accent marker — one small gold mark gives every shelf a spine
+        // and a consistent identity (kept tiny: accent budget stays far under 10%).
+        Container(
+          width: 3,
+          height: 18,
+          margin: const EdgeInsets.only(right: 12),
+          decoration: BoxDecoration(
+            color: cs.primary,
+            borderRadius: AppRadius.xsR,
+          ),
+        ),
         Expanded(child: titleWidget),
         if (trailing != null)
           trailing!

@@ -50,9 +50,13 @@ abstract final class HomeGlassTokens {
   static Color ratingBadgeForeground(ColorScheme cs) => cs.primary;
 
   /// Secondary line on poster scrim (episode progress, genre/year, etc.).
+  ///
+  /// Raised for WCAG AA: the scrim can't fully control what artwork sits under
+  /// the text, so the foreground is kept near-full-opacity instead of a muted
+  /// gray (which is the usual cause of low-contrast overlays on imagery).
   static Color posterMetaForeground(ColorScheme cs) => cs.brightness == Brightness.dark
-      ? cs.onSurface.withValues(alpha: 0.90)
-      : cs.onSurface.withValues(alpha: 0.78);
+      ? cs.onSurface.withValues(alpha: 0.95)
+      : cs.onSurface.withValues(alpha: 0.84);
 
   static Color ratingBadgeBorder(ColorScheme cs) =>
       cs.primary.withValues(alpha: cs.brightness == Brightness.dark ? 0.38 : 0.45);
@@ -117,6 +121,10 @@ enum HomeMediaScrimShape { poster, hero, secondary }
 ///
 /// Keeps artwork vivid while legibility comes from light text on a dark fade,
 /// regardless of app theme brightness.
+///
+/// Alpha floors were raised (`ui-ux-pro-max` §1 Accessibility / §6 color): text
+/// sits on arbitrary poster art, so the scrim must guarantee a dark-enough
+/// backing across the whole text band, not just the bottom few pixels.
 BoxDecoration homeMediaBackdropScrim(HomeMediaScrimShape shape) {
   return switch (shape) {
     HomeMediaScrimShape.hero => BoxDecoration(
@@ -124,12 +132,12 @@ BoxDecoration homeMediaBackdropScrim(HomeMediaScrimShape shape) {
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
           colors: [
-            Colors.black.withValues(alpha: 0.82),
-            Colors.black.withValues(alpha: 0.40),
-            Colors.black.withValues(alpha: 0.10),
+            Colors.black.withValues(alpha: 0.88),
+            Colors.black.withValues(alpha: 0.54),
+            Colors.black.withValues(alpha: 0.18),
             Colors.transparent,
           ],
-          stops: const [0.0, 0.40, 0.62, 1.0],
+          stops: const [0.0, 0.36, 0.60, 0.96],
         ),
       ),
     HomeMediaScrimShape.secondary => BoxDecoration(
@@ -137,11 +145,12 @@ BoxDecoration homeMediaBackdropScrim(HomeMediaScrimShape shape) {
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
           colors: [
-            Colors.black.withValues(alpha: 0.86),
-            Colors.black.withValues(alpha: 0.46),
+            Colors.black.withValues(alpha: 0.92),
+            Colors.black.withValues(alpha: 0.62),
+            Colors.black.withValues(alpha: 0.18),
             Colors.transparent,
           ],
-          stops: const [0.0, 0.50, 0.80],
+          stops: const [0.0, 0.38, 0.62, 0.88],
         ),
       ),
     HomeMediaScrimShape.poster => BoxDecoration(
@@ -149,11 +158,11 @@ BoxDecoration homeMediaBackdropScrim(HomeMediaScrimShape shape) {
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
           colors: [
-            Colors.black.withValues(alpha: 0.80),
-            Colors.transparent,
+            Colors.black.withValues(alpha: 0.86),
+            Colors.black.withValues(alpha: 0.30),
             Colors.transparent,
           ],
-          stops: const [0.0, 0.38, 1.0],
+          stops: const [0.0, 0.38, 0.68],
         ),
       ),
   };

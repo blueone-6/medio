@@ -473,6 +473,15 @@ extension EmbyMediaItemDisplayTitles on EmbyMediaItem {
         return '剧集';
       case 'Season':
         return '季';
+      // Library folders / aggregates — never leak the raw Emby enum
+      // (CollectionFolder, UserRootFolder, ...) into the UI.
+      case 'CollectionFolder':
+      case 'UserView':
+      case 'Folder':
+      case 'AggregateFolder':
+      case 'UserRootFolder':
+      case 'BasePluginFolder':
+        return '媒体库';
       default:
         return type;
     }

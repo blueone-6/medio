@@ -677,9 +677,29 @@ class _HomeRecommendCardState extends ConsumerState<HomeRecommendCard> {
               : MouseRegion(
                   onEnter: (_) => _hovered.value = true,
                   onExit: (_) => _hovered.value = false,
-                  child: _HomePosterFrame(
-                    onTap: pc ? openDetail : null,
-                    child: posterStack,
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: _hovered,
+                    // Card lifts out of the shelf on hover — scale + rise only,
+                    // no shadow (DESIGN.md: depth via tonal layers, hover = scale).
+                    builder: (context, hovered, child) {
+                      final d = AppMotion.effectiveDuration(context, AppMotion.base);
+                      return AnimatedScale(
+                        scale: hovered ? 1.03 : 1.0,
+                        duration: d,
+                        curve: AppMotion.decelerate,
+                        alignment: Alignment.center,
+                        child: AnimatedSlide(
+                          offset: hovered ? const Offset(0, -0.025) : Offset.zero,
+                          duration: d,
+                          curve: AppMotion.decelerate,
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: _HomePosterFrame(
+                      onTap: pc ? openDetail : null,
+                      child: posterStack,
+                    ),
                   ),
                 ),
         );

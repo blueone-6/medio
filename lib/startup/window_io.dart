@@ -11,7 +11,9 @@ Future<void> initDesktopWindow() async {
   if (!Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) return;
   await windowManager.ensureInitialized();
   const options = WindowOptions(
-    size: Size(1280, 720),
+    // Roomy desktop default — 1280×720 felt cramped on 1440p displays.
+    size: Size(1600, 960),
+    minimumSize: Size(1120, 700),
     center: true,
     title: AppConfig.appName,
   );

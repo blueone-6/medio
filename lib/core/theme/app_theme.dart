@@ -216,7 +216,11 @@ class AppTheme {
       ),
       sliderTheme: SliderThemeData(
         activeTrackColor: cs.primary,
-        inactiveTrackColor: cs.surfaceContainerHighest,
+        // Not surfaceContainerHighest: on the settings cards that reads at
+        // roughly 1.4:1, below the WCAG 1.4.11 3:1 floor for UI components.
+        // onSurfaceVariant clears 3:1 against every neutral surface layer in
+        // both light and dark themes.
+        inactiveTrackColor: cs.onSurfaceVariant,
         thumbColor: cs.primary,
         overlayColor: cs.primary.withValues(alpha: 0.12),
         trackHeight: 3,

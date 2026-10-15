@@ -3,15 +3,16 @@ import '../../core/theme/app_radius.dart';
 /// Stitch home screen layout tokens (`streaming-home-cinematic-clean-ui`).
 abstract final class HomeLayout {
   static const horizontalMargin = 20.0;
-  static const sectionGap = 32.0;
-  static const sectionHeaderGap = 16.0;
+  /// Section rhythm — generous gaps so poster rows read as distinct shelves.
+  static const sectionGap = 40.0;
+  static const sectionHeaderGap = 20.0;
 
   /// Tailwind `underline-offset-4` on recommend filter tabs.
   static const filterUnderlineOffset = 4.0;
   static const filterUnderlineThickness = 2.0;
   static const sectionInnerGap = 12.0;
   static const posterTitleGap = 8.0;
-  static const gridGap = 16.0;
+  static const gridGap = 18.0;
   static const cardPadding = 4.0;
   static const badgeInset = 8.0;
   static const searchBarHeight = 48.0;
@@ -59,16 +60,17 @@ abstract final class HomeLayout {
   static const pcSidebarIconSize = 24.0;
   static const pcSidebarIconGap = 16.0;
   static const pcContentMaxWidth = 1200.0;
-  static const pcRecommendColumns = 5;
-  static const pcHeroAspectRatio = 21 / 9;
-  static const pcSectionGap = 24.0;
+  /// Larger posters (4-up) — posters are the product; give them more canvas.
+  static const pcRecommendColumns = 4;
+  static const pcHeroAspectRatio = 16 / 9;
+  static const pcSectionGap = 28.0;
   static const pcSectionTitleFontSize = 24.0;
   static const pcSectionTitleLineHeight = 32 / 24;
   /// Hero title — scaled down from Stitch `display-lg` for typical desktop DPI.
-  static const pcHeroTitleFontSize = 28.0;
-  static const pcHeroTitleLineHeight = 36 / 28;
+  static const pcHeroTitleFontSize = 32.0;
+  static const pcHeroTitleLineHeight = 40 / 32;
   /// Stitch `p-xl` on hero overlay content.
-  static const pcHeroContentPadding = 32.0;
+  static const pcHeroContentPadding = 40.0;
   /// Stitch `p-lg` on secondary continue cards.
   static const pcSecondaryContentPadding = 24.0;
   static const pcHeroBadgeTitleGap = 8.0;
@@ -78,7 +80,7 @@ abstract final class HomeLayout {
   static const pcSecondaryTitleMetaGap = 4.0;
   static const pcSecondaryMetaProgressGap = 12.0;
   /// Stitch `max-w-md` progress track on hero card.
-  static const pcHeroProgressMaxWidth = 448.0;
+  static const pcHeroProgressMaxWidth = 520.0;
   static const pcProgressBarHeight = 4.0;
   static const pcHeroImageOpacity = 0.8;
   static const pcSecondaryImageOpacity = 0.7;

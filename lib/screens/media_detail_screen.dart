@@ -33,6 +33,10 @@ import '../widgets/tv/tv_keyboard_handler.dart';
 /// 详情页简介最大行数（Emby 式长简介；仍限制高度以免顶开分集区）。
 const int kMediaDetailOverviewMaxLines = 6;
 
+/// 简介正文最大宽度：宽屏下不加限制会把整段文字拉成一行上百字，
+/// 远超人眼舒适的阅读行长（约 45 字/行）。用于桌面宽屏详情页。
+const double kMediaDetailOverviewMaxWidth = 760;
+
 /// 对外为 [ConsumerWidget]；状态在 [_MediaDetailScreenBody]（与收窄为 `ConsumerWidget?` 的路由/封装兼容）。
 class MediaDetailScreen extends ConsumerWidget {
   const MediaDetailScreen({super.key, required this.itemId});
@@ -625,6 +629,31 @@ class _MetaChip extends StatelessWidget {
   }
 }
 
+/// 桌面 hero 的元信息行 — 点分隔纯文字，无 chip 底色/描边。
+///
+/// 参考 Plex / Netflix 详情页：元数据作为一行次要文字直接落在剧照渐隐上，
+/// 不再用一排小方块，避免在 hero 上叠出第三个表面。
+class _DetailMetaLine extends StatelessWidget {
+  const _DetailMetaLine({required this.parts});
+
+  final List<String> parts;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Text(
+      parts.join('   ·   '),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: cs.onSurfaceVariant,
+            fontSize: 14,
+            letterSpacing: 0.1,
+          ),
+    );
+  }
+}
+
 Widget _detailHeroPosterStack({
   required BuildContext context,
   required ColorScheme cs,
@@ -782,18 +811,24 @@ Widget _detailHeroSliver(
             child: ClipRRect(
               borderRadius: AppRadius.mdR,
               child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: cs.surfaceContainerHigh.withValues(alpha: 0.92),
-                  boxShadow: [
-                    BoxShadow(
-                      color: cs.shadow.withValues(alpha: 0.10),
-                      blurRadius: 8,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
+                // TV keeps a solid info panel (D-Pad focus contrast). Desktop
+                // drops the raised card entirely so the hero reads as ONE
+                // continuous image (poster + text on the backdrop fade) instead
+                // of a bordered panel floating between two other surfaces.
+                decoration: context.isTvUi
+                    ? BoxDecoration(
+                        color: cs.surfaceContainerHigh.withValues(alpha: 0.92),
+                        boxShadow: [
+                          BoxShadow(
+                            color: cs.shadow.withValues(alpha: 0.10),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      )
+                    : const BoxDecoration(),
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  padding: EdgeInsets.fromLTRB(context.isTvUi ? 16 : 2, 12, 16, 12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -813,25 +848,36 @@ Widget _detailHeroSliver(
 
                       const SizedBox(height: 8),
 
-                      // 元数据标签行
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: [
-                          // 年份
-                          if (seriesItem.productionYear != null)
-                            _MetaChip('${seriesItem.productionYear}', icon: Icons.calendar_today_outlined),
-                          // 类型
-                          _MetaChip(_typeLabel(seriesItem.type), icon: Icons.label_outline),
-                          // 时长（电影/单集）
-                          if (!heroIsSeries && seriesItem.runTimeTicks != null && seriesItem.runTimeTicks! > 0)
-                            _MetaChip(_formatMovieRuntime(seriesItem.runTimeTicks), icon: Icons.schedule_outlined),
-                          if (heroIsSeries && formatRuntime != null)
-                            _MetaChip(formatRuntime, icon: Icons.schedule_outlined),
-                          // 制片地
-                          ...?_productionLocationChips(seriesItem.productionLocations),
-                        ],
-                      ),
+                      // 元数据行 — TV 用 chip（触控/焦点更友好）；桌面用纯文字行，
+                      // 避免 hero 上再出现一排小方块（削减割裂感）。
+                      if (context.isTvUi)
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            if (seriesItem.productionYear != null)
+                              _MetaChip('${seriesItem.productionYear}', icon: Icons.calendar_today_outlined),
+                            _MetaChip(_typeLabel(seriesItem.type), icon: Icons.label_outline),
+                            if (!heroIsSeries && seriesItem.runTimeTicks != null && seriesItem.runTimeTicks! > 0)
+                              _MetaChip(_formatMovieRuntime(seriesItem.runTimeTicks), icon: Icons.schedule_outlined),
+                            if (heroIsSeries && formatRuntime != null)
+                              _MetaChip(formatRuntime, icon: Icons.schedule_outlined),
+                            ...?_productionLocationChips(seriesItem.productionLocations),
+                          ],
+                        )
+                      else
+                        _DetailMetaLine(
+                          parts: [
+                            if (seriesItem.productionYear != null) '${seriesItem.productionYear}',
+                            _typeLabel(seriesItem.type),
+                            if (!heroIsSeries && seriesItem.runTimeTicks != null && seriesItem.runTimeTicks! > 0)
+                              _formatMovieRuntime(seriesItem.runTimeTicks),
+                            if (heroIsSeries && formatRuntime != null) formatRuntime,
+                            if ((seriesItem.productionLocations?.isNotEmpty ?? false) &&
+                                seriesItem.productionLocations!.first.trim().isNotEmpty)
+                              seriesItem.productionLocations!.first.trim(),
+                          ],
+                        ),
 
                       const SizedBox(height: 10),
 
@@ -886,26 +932,36 @@ Widget _detailHeroSliver(
                       // 简介
                       if (hasOverview)
                         Expanded(
-                          child: LayoutBuilder(
-                            builder: (ctx, c) {
-                              final overviewStyle = theme.textTheme.bodyMedium!.copyWith(
-                                color: cs.onSurface,
-                                height: 1.45,
-                                fontSize: 13.5,
-                              );
-                              final budget = c.maxHeight;
-                              final byHeight = _overviewMaxLinesForBudget(ctx, budget, overviewStyle);
-                              final maxLines = byHeight < kMediaDetailOverviewMaxLines ? byHeight : kMediaDetailOverviewMaxLines;
-                              return Align(
-                                alignment: Alignment.topLeft,
-                                child: Text(
-                                  overviewText,
-                                  style: overviewStyle,
-                                  maxLines: maxLines,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              );
-                            },
+                          child: Padding(
+                            // Breathing room under the play/meta block; the
+                            // synopsis used to start flush against it.
+                            padding: const EdgeInsets.only(top: 14),
+                            child: LayoutBuilder(
+                              builder: (ctx, c) {
+                                final overviewStyle = theme.textTheme.bodyLarge!.copyWith(
+                                  color: cs.onSurface,
+                                  height: 1.7,
+                                  fontSize: 15,
+                                );
+                                final budget = c.maxHeight;
+                                final byHeight = _overviewMaxLinesForBudget(ctx, budget, overviewStyle);
+                                final maxLines = byHeight < kMediaDetailOverviewMaxLines ? byHeight : kMediaDetailOverviewMaxLines;
+                                return Align(
+                                  alignment: Alignment.topLeft,
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      maxWidth: kMediaDetailOverviewMaxWidth,
+                                    ),
+                                    child: Text(
+                                      overviewText,
+                                      style: overviewStyle,
+                                      maxLines: maxLines,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
                           ),
                         ),
                     ],
@@ -934,16 +990,42 @@ Widget _detailHeroSliver(
         ),
         DecoratedBox(
           decoration: BoxDecoration(
+            // Longer, stronger bottom scrim: the desktop hero now places title
+            // and synopsis directly on the backdrop, so the fade must reach a
+            // near-solid surface well before the text zone (Over-Image
+            // Legibility Rule) while keeping the top of the still cinematic.
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              stops: const [0.0, 0.50, 0.70, 0.88, 1.0],
+              stops: const [0.0, 0.24, 0.44, 0.60, 0.78, 1.0],
               colors: [
                 Colors.transparent,
                 Colors.transparent,
-                cs.surface.withValues(alpha: 0.12),
-                cs.surface.withValues(alpha: 0.55),
+                cs.surface.withValues(alpha: 0.42),
+                cs.surface.withValues(alpha: 0.78),
+                cs.surface.withValues(alpha: 0.94),
                 cs.surface,
+              ],
+            ),
+          ),
+        ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            // Horizontal left scrim: the poster/title/meta/synopsis block
+            // spans roughly the left 60% of the hero, so a left-to-right
+            // darkening is what actually guarantees WCAG contrast when the
+            // still has a bright subject there (a vertical scrim alone does
+            // not depend on where the subject sits).
+            gradient: LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              stops: const [0.0, 0.45, 0.68, 0.88, 1.0],
+              colors: [
+                cs.surface.withValues(alpha: 0.84),
+                cs.surface.withValues(alpha: 0.68),
+                cs.surface.withValues(alpha: 0.40),
+                cs.surface.withValues(alpha: 0.12),
+                Colors.transparent,
               ],
             ),
           ),
@@ -1085,16 +1167,21 @@ Widget _detailHeroSliverMobile({
               ],
             ),
             if (hasOverview) ...[
-              const SizedBox(height: 12),
-              Text(
-                overviewText,
-                style: theme.textTheme.bodyMedium!.copyWith(
-                  color: cs.onSurface,
-                  height: 1.45,
-                  fontSize: 13.5,
+              const SizedBox(height: 16),
+              ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: kMediaDetailOverviewMaxWidth,
                 ),
-                maxLines: kMediaDetailOverviewMaxLines,
-                overflow: TextOverflow.ellipsis,
+                child: Text(
+                  overviewText,
+                  style: theme.textTheme.bodyLarge!.copyWith(
+                    color: cs.onSurface,
+                    height: 1.7,
+                    fontSize: 15,
+                  ),
+                  maxLines: kMediaDetailOverviewMaxLines,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ],
           ],
@@ -1361,28 +1448,41 @@ class _SeriesEpisodePanelState extends State<_SeriesEpisodePanel> {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Quick range selector
-                _EpisodeRangeSelector(
-                  maxEpisodeNumber: maxEpNum,
-                  selectedStart: rangeStart,
-                  onSelect: (start) {
-                    setState(() {
-                      _quickRangeStart = _quickRangeStart == start ? null : start;
-                      if (!_panelExpanded) _panelExpanded = true;
-                    });
-                  },
-                ),
-                const SizedBox(height: 10),
-                // Horizontal scrollable episode card list
-                _EpisodeCardRow(
-                  episodes: list,
-                  emby: widget.emby,
-                  nextUpEpisodeId: widget.nextUpEpisodeId,
-                  scrollToEpisodeNumber: rangeStart,
-                  onEpisodeFocus: widget.onEpisodeFocus,
-                  onPlayEpisode: widget.onPlayEpisode,
-                  titleFor: _episodeTitle,
-                ),
+                // Quick range selector — collapsed only. In 选集 mode the whole
+                // season is on screen already, so a range filter is meaningless.
+                if (!_panelExpanded) ...[
+                  _EpisodeRangeSelector(
+                    maxEpisodeNumber: maxEpNum,
+                    selectedStart: rangeStart,
+                    onSelect: (start) {
+                      setState(() {
+                        _quickRangeStart = _quickRangeStart == start ? null : start;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                // Collapsed: one horizontal strip. 选集 (expanded): a wrapped
+                // multi-row grid so the whole season is scannable at a glance.
+                if (_panelExpanded)
+                  _EpisodeCardGrid(
+                    episodes: list,
+                    emby: widget.emby,
+                    nextUpEpisodeId: widget.nextUpEpisodeId,
+                    onEpisodeFocus: widget.onEpisodeFocus,
+                    onPlayEpisode: widget.onPlayEpisode,
+                    titleFor: _episodeTitle,
+                  )
+                else
+                  _EpisodeCardRow(
+                    episodes: list,
+                    emby: widget.emby,
+                    nextUpEpisodeId: widget.nextUpEpisodeId,
+                    scrollToEpisodeNumber: rangeStart,
+                    onEpisodeFocus: widget.onEpisodeFocus,
+                    onPlayEpisode: widget.onPlayEpisode,
+                    titleFor: _episodeTitle,
+                  ),
               ],
             );
           },
@@ -1481,14 +1581,18 @@ class _EpisodePanelButton extends StatelessWidget {
         onActivate: onPressed,
       );
     }
+    final cs = Theme.of(context).colorScheme;
     return Tooltip(
       message: label,
-      child: FilledButton.tonalIcon(
+      // Ghost text button (Plex/Apple-TV style): secondary episode controls
+      // shouldn't add two more filled boxes to the page.
+      child: TextButton.icon(
         onPressed: onPressed,
         icon: Icon(icon, size: 20),
         label: Text(label, style: Theme.of(context).textTheme.labelLarge),
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        style: TextButton.styleFrom(
+          foregroundColor: cs.onSurfaceVariant,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           visualDensity: VisualDensity.compact,
           shape: const RoundedRectangleBorder(borderRadius: AppRadius.smR),
         ),
@@ -1534,11 +1638,12 @@ class _RangeChip extends StatelessWidget {
     }
 
     return Material(
-      color: selected ? cs.primary : cs.surfaceContainerHighest.withValues(alpha: 0.5),
+      color: selected ? cs.primary : cs.surfaceContainerHighest.withValues(alpha: 0.30),
       borderRadius: borderRadius,
       child: InkWell(
         borderRadius: borderRadius,
         onTap: onTap,
+        hoverColor: cs.onSurface.withValues(alpha: 0.06),
         child: child,
       ),
     );
@@ -1786,6 +1891,69 @@ double? _episodeProgressFraction(double? raw) {
   final pct = normalizePlayedPercentage(raw);
   if (pct == null || pct <= 0 || pct >= 99.5) return null;
   return (pct / 100.0).clamp(0.0, 1.0);
+}
+
+/// Expanded 选集 mode: a wrapped multi-row grid of the same episode cards used
+/// by the horizontal strip, so a whole season can be scanned without paging.
+class _EpisodeCardGrid extends StatelessWidget {
+  const _EpisodeCardGrid({
+    required this.episodes,
+    required this.emby,
+    required this.nextUpEpisodeId,
+    required this.onEpisodeFocus,
+    required this.onPlayEpisode,
+    required this.titleFor,
+  });
+
+  final List<EmbyMediaItem> episodes;
+  final EmbyService emby;
+  final String? nextUpEpisodeId;
+  final ValueChanged<String> onEpisodeFocus;
+  final void Function(EmbyMediaItem episode) onPlayEpisode;
+  final String Function(EmbyMediaItem ep, int index) titleFor;
+
+  static const _cardWidth = 140.0;
+  static const _gap = 10.0;
+  static const _maxRows = 3;
+
+  @override
+  Widget build(BuildContext context) {
+    const posterH = _cardWidth / (16 / 9);
+    const titleH = 38.0;
+    const cardH = posterH + 6 + titleH + 4;
+    final maxH = cardH * _maxRows + _gap * (_maxRows - 1);
+    final focusPad = context.isTvUi ? TvHomeLayout.focusBorderWidth : 0.0;
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxH + focusPad),
+      child: ClipRect(
+        child: SingleChildScrollView(
+          child: Wrap(
+            spacing: _gap,
+            runSpacing: _gap,
+            children: [
+              for (var i = 0; i < episodes.length; i++)
+                SizedBox(
+                  width: _cardWidth,
+                  child: _EpisodeCard(
+                    imageUrl: emby.posterUrlForItem(
+                      episodes[i],
+                      maxHeight: AppConfig.posterMaxHeight,
+                    ),
+                    title: titleFor(episodes[i], i),
+                    isNextUp: episodes[i].id == nextUpEpisodeId,
+                    progress: episodes[i].userDataPlayedPercentage,
+                    httpHeaders: emby.imageAuthHeaders,
+                    onTap: () => onEpisodeFocus(episodes[i].id),
+                    onPlay: () => onPlayEpisode(episodes[i]),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _EpisodeCard extends StatelessWidget {
@@ -2083,11 +2251,12 @@ class _CompactSeasonMenu extends StatelessWidget {
       ],
       builder: (context, menuController, _) {
         return Material(
-          color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
+          color: cs.surfaceContainerHighest.withValues(alpha: 0.30),
           borderRadius: AppRadius.smR,
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             borderRadius: AppRadius.smR,
+            hoverColor: cs.onSurface.withValues(alpha: 0.06),
             onTap: () {
               if (menuController.isOpen) { menuController.close(); } else { menuController.open(); }
             },

@@ -46,11 +46,26 @@ class MediaBadges extends StatelessWidget {
     }
   }
 
+  /// Dark ink used when a spec swatch is too light for white text.
+  static const Color _darkInk = Color(0xFF1A1A1E); // ink-primary-light
+
+  /// Pick whichever of white / dark ink gives the better contrast against the
+  /// swatch. A single fixed foreground can't work here: the spec colors span
+  /// near-white amber (`#FFCA28` ≈ 1.5:1 on white) to mid-dark purple
+  /// (`#7A6A94`). Guarantees the 10px label clears WCAG AA (4.5:1) in both
+  /// light and dark themes.
+  static Color _fg(Color bg) {
+    final l = bg.computeLuminance();
+    final onWhite = 1.05 / (l + 0.05);
+    final onInk = (l + 0.05) / (_darkInk.computeLuminance() + 0.05);
+    return onInk > onWhite ? _darkInk : Colors.white;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (badges.isEmpty) return const SizedBox.shrink();
     final colors = context.appColors;
-    final style = AppTextStyles.badge(context).copyWith(color: colors.badgeForeground);
+    final baseStyle = AppTextStyles.badge(context);
     final pad = compact
         ? const EdgeInsets.symmetric(horizontal: 4, vertical: 1.5)
         : const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5);
@@ -58,18 +73,27 @@ class MediaBadges extends StatelessWidget {
       spacing: 3,
       runSpacing: 3,
       children: [
-        for (final b in badges)
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: _bg(colors, b),
-              borderRadius: AppRadius.xsR,
-            ),
-            child: Padding(
-              padding: pad,
-              child: Text(_label(b), style: style),
-            ),
-          ),
+        for (final b in badges) _badge(colors, baseStyle, pad, b),
       ],
+    );
+  }
+
+  Widget _badge(
+    AppColors colors,
+    TextStyle baseStyle,
+    EdgeInsets pad,
+    MediaSpecBadge b,
+  ) {
+    final bg = _bg(colors, b);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: AppRadius.xsR,
+      ),
+      child: Padding(
+        padding: pad,
+        child: Text(_label(b), style: baseStyle.copyWith(color: _fg(bg))),
+      ),
     );
   }
 }

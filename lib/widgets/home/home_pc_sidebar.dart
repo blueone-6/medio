@@ -170,11 +170,11 @@ class _NavLinkState extends State<_NavLink> {
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: active
-                      ? cs.primaryContainer.withValues(alpha: 0.22)
+                      ? cs.primaryContainer.withValues(alpha: 0.30)
                       : (_hovered ? cs.onSurface.withValues(alpha: 0.05) : null),
                   borderRadius: AppRadius.smR,
                   border: active
-                      ? Border.all(color: cs.primary.withValues(alpha: 0.35))
+                      ? Border.all(color: cs.primary.withValues(alpha: 0.50))
                       : _focused
                           ? Border.all(color: cs.primary.withValues(alpha: 0.55), width: 2)
                           : null,

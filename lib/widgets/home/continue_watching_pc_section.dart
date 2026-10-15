@@ -267,25 +267,52 @@ class _PcProgressBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final colors = context.appColors;
-    final bar = ClipRRect(
-      borderRadius: AppRadius.pillR,
-      child: SizedBox(
-        height: HomeLayout.pcProgressBarHeight,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            ColoredBox(color: HomeGlassTokens.backdropProgressTrack(cs)),
-            FractionallySizedBox(
-              alignment: Alignment.centerLeft,
-              widthFactor: value.clamp(0.0, 1.0),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: colors.progressActive,
-                  borderRadius: AppRadius.pillR,
+    final bar = DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: AppRadius.pillR,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.35),
+            blurRadius: 3,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: AppRadius.pillR,
+        child: SizedBox(
+          height: HomeLayout.pcProgressBarHeight,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ColoredBox(color: HomeGlassTokens.backdropProgressTrack(cs)),
+              FractionallySizedBox(
+                alignment: Alignment.centerLeft,
+                widthFactor: value.clamp(0.0, 1.0),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: colors.progressActive,
+                    borderRadius: AppRadius.pillR,
+                  ),
                 ),
               ),
-            ),
-          ],
+              // Contrast rim: the active fill can sit close in luminance to the
+              // poster behind it, so a dark 1px outline guarantees the bar has a
+              // defined boundary against any artwork (WCAG 1.4.11 non-text 3:1).
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: AppRadius.pillR,
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: 0.50),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

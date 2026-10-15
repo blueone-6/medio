@@ -21,23 +21,29 @@ class MediaSimilarItemsSliver extends ConsumerWidget {
     return SliverPadding(
       padding: const EdgeInsets.fromLTRB(18, 24, 18, 32),
       sliver: SliverToBoxAdapter(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('相关影视',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 12),
-            Consumer(
-              builder: (ctx, ref, _) {
-                final asyncItems = ref.watch(embySimilarItemsProvider(itemId));
-                return asyncItems.when(
-                  data: (items) {
-                    if (items.isEmpty) return const SizedBox.shrink();
-                    return _SimilarGrid(items: items, emby: emby);
-                  },
+        child: Consumer(
+          builder: (ctx, ref, _) {
+            final asyncItems = ref.watch(embySimilarItemsProvider(itemId));
+            // 相似内容是装饰性区块：没有相似条目或接口失败时整段隐藏
+            // （连标题一起），否则页面底部会剩一个孤零零的「相关影视」标题。
+            final visible = asyncItems.when(
+              data: (items) => items.isNotEmpty,
+              loading: () => true,
+              error: (_, __) => false,
+            );
+            if (!visible) return const SizedBox.shrink();
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('相关影视',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 12),
+                asyncItems.when(
+                  data: (items) => _SimilarGrid(items: items, emby: emby),
                   loading: () => LayoutBuilder(
                     builder: (ctx, constraints) {
                       const minTileW = 108.0;
@@ -75,11 +81,12 @@ class MediaSimilarItemsSliver extends ConsumerWidget {
                       );
                     },
                   ),
+                  // Unreachable: errors already hide the whole section above.
                   error: (_, __) => const SizedBox.shrink(),
-                );
-              },
-            ),
-          ],
+                ),
+              ],
+            );
+          },
         ),
       ),
     );

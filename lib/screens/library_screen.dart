@@ -107,6 +107,7 @@ class LibraryBrowseBody extends ConsumerWidget {
           maxContentWidth: maxContentWidth,
           horizontalPadding: horizontalPadding,
           paddingTop: paddingTop,
+          centerSingleRow: true,
           itemCount: list.length,
           itemBuilder: (context, i) {
             final m = list[i];

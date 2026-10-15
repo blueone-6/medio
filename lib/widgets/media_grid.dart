@@ -27,6 +27,7 @@ class MediaGrid extends StatelessWidget {
     this.paddingTop = 8,
     this.maxContentWidth,
     this.horizontalPadding,
+    this.centerSingleRow = false,
   });
 
   final int itemCount;
@@ -37,6 +38,11 @@ class MediaGrid extends StatelessWidget {
   final double paddingTop;
   final double? maxContentWidth;
   final double? horizontalPadding;
+
+  /// When the items fit in a single row, center that row instead of hugging
+  /// the left edge. Avoids a lone card floating in a wide empty canvas
+  /// (e.g. a media library with few libraries).
+  final bool centerSingleRow;
 
   @override
   Widget build(BuildContext context) {
@@ -65,10 +71,30 @@ class MediaGrid extends StatelessWidget {
           itemCount: itemCount,
           itemBuilder: itemBuilder,
         );
-        if (maxContentWidth == null) return grid;
+        Widget content = grid;
+        if (centerSingleRow && itemCount > 0 && itemCount <= count) {
+          content = Padding(
+            padding: EdgeInsets.fromLTRB(horizontalPad, paddingTop, horizontalPad, 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < itemCount; i++) ...[
+                  if (i > 0) const SizedBox(width: gridSpacing),
+                  SizedBox(
+                    width: tileW,
+                    height: tileH,
+                    child: itemBuilder(context, i),
+                  ),
+                ],
+              ],
+            ),
+          );
+        }
+        if (maxContentWidth == null) return content;
         return Align(
           alignment: Alignment.topCenter,
-          child: SizedBox(width: contentW, child: grid),
+          child: SizedBox(width: contentW, child: content),
         );
       },
     );
