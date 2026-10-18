@@ -100,10 +100,22 @@ jnigen 直连 JNI，而不是 MethodChannel）：
 `adb shell am start -n com.medio.community/com.example.media_client.MainActivity` →
 截图确认非白屏（白屏时截图只有 ~45KB，正常首页 ~1.9MB）。
 
-**另一个隐患**：本机 `flutter pub get` 会重解析 144 个依赖（提交的 `pubspec.lock`
-与当前 SDK / 镜像不符），实际构建用的是 `shared_preferences_android` 2.5.0 而不是
-lock 里钉的 2.4.23——白屏就是这样被带进来的。上面的 keep 规则对两个版本都成立，
-但 lock 漂移需要单独收敛，否则依赖会继续漂。
+**依赖锁漂移（已收敛）**：白屏是被它带进来的——本机 `PUB_HOSTED_URL` 指向
+`https://pub.flutter-io.cn`，而提交的 `pubspec.lock` 里所有 hosted 包记的都是
+`https://pub.dev`，pub 把「换了源」当成换了包，于是 `pub get` 重解析了 144 个依赖
+（实际编译 `shared_preferences_android` 2.5.0，而 lock 里钉的是 2.4.23）。
+把 User 级 `PUB_HOSTED_URL` 删掉
+（`[Environment]::SetEnvironmentVariable('PUB_HOSTED_URL',$null,'User')`）之后，
+`flutter pub get --enforce-lockfile` 直接通过、lock 零改动，解析回 2.4.23。
+
+⚠️ **换依赖源 / 换版本后必须 `flutter clean`**：增量 Dart 编译器会留着旧的 2.5.0
+kernel，而 Gradle 已按 2.4.23 编译 Java，于是得到「Dart 在找 jnigen 的
+`SharedPreferencesApiRegistrar`、Java 侧根本没有」的混合包，
+**debug 包同样抛 `ClassNotFoundException`**——很容易误判成 R8 问题（本次就先被
+这个坑带偏了一轮）。清干净重建后，锁文件版本（2.4.23）release + R8 正常启动。
+
+另外：2.4.23 走 MethodChannel，上面的 keep 规则对它是 no-op；依赖一旦再升到 2.5.x
+规则立即生效（已在 2.5.0 上实测能启动）。
 
 ## 尚未处理 / 已知问题
 
@@ -116,8 +128,10 @@ lock 里钉的 2.4.23——白屏就是这样被带进来的。上面的 keep �
 3. **transport 无法感知客户端半关连接**是本次的通用隐患：只要对端把响应读完丢弃，
    我们就永远不知道它已经走了。除 stale 判定外，可考虑给 open-ended 响应加
    「长时间无消费迹象」检测（例如统计 `flush()` 的阻塞时间分布）。
-4. **pubspec.lock 漂移**：见上一节末尾；`flutter pub get` 会改锁文件，构建后需
-   `git checkout -- pubspec.lock`，长期方案是让锁与当前 Flutter/镜像一致。
+4. **pubspec.lock 与镜像**：已按上面「依赖锁漂移」一节收敛（用 pub.dev 时
+   `flutter pub get --enforce-lockfile` 通过，锁零改动）。若以后确实必须用镜像，
+   构建完记得 `git checkout -- pubspec.lock`，并先用 `--enforce-lockfile` 验证锁
+   是否还成立，不要静默接受 144 个包的重解析。
 
 ## 测量陷阱（勿重蹈）
 
@@ -135,3 +149,8 @@ lock 里钉的 2.4.23——白屏就是这样被带进来的。上面的 keep �
   （`INSTALL_FAILED_ABORTED: User rejected permissions`）：先 `adb shell input keyevent 87` 唤醒。
 - PowerShell 转义 `$`/反引号极脆弱；日志分析用 `tool/analyze_transport_log.js`
   （按 route 分组：吞吐、重复块、连续读流、并发 relay、10s 桶、缓冲水位）。
+- **依赖版本/来源变了以后 `flutter build` 不一定重编 Dart**：看到「Dart 在找某个
+  Java 类、包里没有」的 `ClassNotFoundException`，先 `flutter clean`，
+  否则会把它误判成 R8 剪裁（本次多花了一轮构建）。
+- 白屏判据：`adb shell screencap` 拉回来的 PNG **~45KB = 空白页**，
+  **~1.9MB = 正常首页**，不用人眼看图就能判断。
