@@ -2,10 +2,11 @@
 
 Medio incorporates the following third-party software. Each component is
 distributed under its own license; the full text of every license is either
-quoted below or available at the upstream URL referenced. The list reflects
-the runtime dependencies bundled with the **Medio Community** Windows x64
-build; non-bundled development tooling (Flutter SDK, Dart SDK) is mentioned
-for completeness.
+quoted below or available at the upstream URL referenced. Sections 1–6 describe
+the **Medio Community Windows x64** build; section 7 covers an Android-only
+component, and the Android app additionally depends on AndroidX Media3
+(Apache-2.0). Non-bundled development tooling (Flutter SDK, Dart SDK) is
+mentioned for completeness.
 
 This file is provided to satisfy the attribution requirements of the GNU
 General Public License v3 or later (under which Medio itself is distributed)
@@ -63,7 +64,7 @@ Full license texts are available in each package on <https://pub.dev>.
 | `cached_network_image` | ^3.3.1 | <https://pub.dev/packages/cached_network_image> | MIT |
 | `media_kit` | ^1.2.6 | <https://pub.dev/packages/media_kit> | MIT |
 | `media_kit_video` | ^2.0.1 | <https://pub.dev/packages/media_kit_video> | MIT |
-| `media_kit_libs_video` | ^1.0.7 | <https://pub.dev/packages/media_kit_libs_video> | MIT |
+| `media_kit_libs_windows_video` | ^1.0.7 | <https://pub.dev/packages/media_kit_libs_windows_video> | MIT |
 | `window_manager` | ^0.5.1 | <https://pub.dev/packages/window_manager> | MIT |
 | `intl` | ^0.20.2 | <https://pub.dev/packages/intl> | BSD-3-Clause |
 | `collection` | ^1.18.0 | <https://pub.dev/packages/collection> | BSD-3-Clause |
@@ -143,3 +144,42 @@ Medio Community is an independently developed compatible client. It
 interacts with self-hosted media servers using their documented HTTP APIs;
 no server source code, trademarks, or proprietary client code from any
 upstream media-server vendor is included in this binary.
+
+---
+
+## 7. FFmpeg (Android, LGPL build for the media3 audio decoder)
+
+- Project: <https://ffmpeg.org>
+- Source: <https://ffmpeg.org/releases/ffmpeg-6.0.tar.xz> (version 6.0)
+- License: **GNU Lesser General Public License, version 2.1 or later**
+
+Android builds of Medio bundle `libffmpegJNI.so` (arm64-v8a), built from
+FFmpeg 6.0 with `--disable-everything` and only
+`--enable-decoder=ac3,eac3,dca,mlp,truehd` plus `--enable-swresample` — no
+GPL-only component is enabled, so the library is LGPL (the build reports
+"License: LGPL version 2.1 or later"). It provides the software audio decoders
+this platform's codec list lacks, so Dolby/DTS remuxes play with sound instead
+of silently.
+
+FFmpeg is linked into `libffmpegJNI.so`, which is a **separate, replaceable
+shared object** loaded at runtime by the app (the application itself does not
+link FFmpeg). Under LGPL-2.1 §6 that separability is the mechanism that lets
+this combination be distributed: the FFmpeg portions can be relinked or
+replaced by rebuilding `libffmpegJNI.so`. The corresponding source is the
+unmodified FFmpeg 6.0 release plus the flags above and upstream media3's
+`ffmpeg_jni.cc`/`CMakeLists.txt`; the exact rebuild recipe is
+`tool/build_ffmpeg_decoder.ps1`.
+
+The Java bindings it is used through (`androidx.media3.decoder.ffmpeg.*`,
+vendored under `android/app/src/main/media3ffmpeg/`, tag `1.4.1`) are from
+AndroidX Media3, licensed under the Apache License 2.0, and are unmodified
+apart from dropping a compile-time-only nullness annotation (documented in that
+directory). Media3 itself (`androidx.media3:media3-*`) is likewise Apache-2.0,
+© The Android Open Source Project. The full LGPL 2.1 text is available at
+<https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html>, and FFmpeg's own
+license notes at <https://ffmpeg.org/legal.html>.
+
+The library is built for `arm64-v8a` only; on other ABIs the extension is
+skipped (media3's `LibraryLoader` treats the missing library as unavailable) and
+those devices behave as before — AC3/EAC3 sources there still play silently.
+

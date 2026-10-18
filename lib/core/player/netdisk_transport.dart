@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
+
 import '../logging/app_log.dart';
 import 'netdisk_block_cache.dart';
 import 'netdisk_range_plan.dart';
@@ -24,6 +26,9 @@ class NetdiskTransport {
 
   static final NetdiskTransport instance = NetdiskTransport._();
 
+  /// Monotonic id for relay diagnostics (see `_stream`).
+  static int _relaySeq = 0;
+
   /// Upstream chunk / cache block size.
   static const int chunkSize = 4 * 1024 * 1024;
 
@@ -38,10 +43,17 @@ class NetdiskTransport {
   NetdiskBlockCache? cache;
 
   /// Registers [upstreamUrl] and returns the localhost URL to hand the player.
+  ///
+  /// [redirectUrl] is the stable server stream URL that 307s to a *fresh* signed
+  /// URL per request. It is kept as a fallback for the case where the
+  /// pre-resolved [upstreamUrl] expires: re-resolving can return the same dead
+  /// URL (the server caches its redirect for minutes), whereas retrying through
+  /// the redirecting URL mints a new one immediately.
   Future<String> register({
     required String upstreamUrl,
     Map<String, String>? headers,
     required String cacheKey,
+    String? redirectUrl,
     Future<ResolvedStreamTarget> Function()? refresh,
   }) async {
     final server = await _ensureServer();
@@ -50,6 +62,7 @@ class NetdiskTransport {
       upstreamUrl: upstreamUrl,
       headers: headers ?? const {},
       cacheKey: cacheKey,
+      redirectUrl: redirectUrl,
       refresh: refresh,
     );
     final local = 'http://127.0.0.1:${server.port}/$id';
@@ -116,6 +129,31 @@ class NetdiskTransport {
     final requestedEnd = clientReq.end;
     var pos = clientReq.start;
 
+    // Relay diagnostics: high-bitrate remuxes (40 Mbps+) stall when the phone
+    // cannot sustain the bitrate, and the player only reports "rebuffering".
+    // Logging the achieved throughput and slow upstream block fetches makes the
+    // real bottleneck visible in the app log / diagnostics screen.
+    final relayStartedAt = DateTime.now();
+    var relayBytes = 0;
+    var blocksServed = 0;
+    var cacheHits = 0;
+    var lastThroughputLogBytes = 0;
+    final relayId = ++_relaySeq;
+    final clientPort = req.connectionInfo?.remotePort ?? 0;
+    AppLog.instance.i(
+      'NetdiskTransport',
+      'relay #$relayId start range=${req.headers.value(HttpHeaders.rangeHeader) ?? '-'} '
+          'client=$clientPort upstream=${AppLog.redactUrl(route.upstreamUrl)}',
+    );
+    // logcat-visible (the AppLog file is not reachable on a release install) so a
+    // slow seek can be attributed to the transport or to the player.
+    debugPrint(
+      'MEDIO-TRANSPORT relay #$relayId start range='
+      '${req.headers.value(HttpHeaders.rangeHeader) ?? '-'}',
+    );
+    const throughputLogEveryBytes = 32 * 1024 * 1024;
+    const slowBlockFetchThresholdMs = 1500;
+
     int? total;
     ContentType? contentType;
     var headersWritten = false;
@@ -143,8 +181,10 @@ class NetdiskTransport {
         }
 
         if (block == null || total == null) {
+          final fetchStartedAt = DateTime.now();
           final outcome =
               await _fetchBlockWithRecovery(route, blockIndex, total, client);
+          final fetchMs = DateTime.now().difference(fetchStartedAt).inMilliseconds;
           final relay = outcome.wholeFile;
           if (relay != null) {
             return await _relayWholeFile(resp, relay, headersWritten, isHead);
@@ -152,6 +192,15 @@ class NetdiskTransport {
           if (outcome.bytes == null) {
             if (block == null) break;
           } else {
+            if (fetchMs >= slowBlockFetchThresholdMs) {
+              final mbps = outcome.bytes!.length * 8 / (fetchMs * 1000.0);
+              AppLog.instance.w(
+                'NetdiskTransport',
+                'slow upstream block #$blockIndex: '
+                    '${(outcome.bytes!.length / 1048576).toStringAsFixed(1)}MB in '
+                    '${fetchMs}ms (${mbps.toStringAsFixed(1)} Mbps)',
+              );
+            }
             if (outcome.total != null) {
               total = outcome.total;
               unawaited(cache?.writeTotal(route.cacheKey, total!));
@@ -188,6 +237,22 @@ class NetdiskTransport {
         resp.add(slice);
         await resp.flush();
         pos = blockStart + serveTo;
+        relayBytes += slice.length;
+        blocksServed++;
+        if (fromCache) cacheHits++;
+
+        if (relayBytes - lastThroughputLogBytes >= throughputLogEveryBytes) {
+          lastThroughputLogBytes = relayBytes;
+          final seconds =
+              DateTime.now().difference(relayStartedAt).inMilliseconds / 1000.0;
+          final mbps = seconds > 0 ? relayBytes * 8 / (seconds * 1000000.0) : 0.0;
+          AppLog.instance.i(
+            'NetdiskTransport',
+            'relay ${(relayBytes / 1048576).toStringAsFixed(0)}MB in '
+                '${seconds.toStringAsFixed(0)}s = ${mbps.toStringAsFixed(1)} Mbps '
+                '(blocks=$blocksServed cacheHits=$cacheHits)',
+          );
+        }
 
         if (total != null && pos >= total) break;
         if (data.length < chunkSize) break;
@@ -195,6 +260,17 @@ class NetdiskTransport {
     } catch (e) {
       AppLog.instance.d('NetdiskTransport', 'stream ended: $e');
     } finally {
+      final seconds =
+          DateTime.now().difference(relayStartedAt).inMilliseconds / 1000.0;
+      if (seconds >= 5 && !isHead) {
+        final mbps = relayBytes * 8 / (seconds * 1000000.0);
+        AppLog.instance.i(
+          'NetdiskTransport',
+          'relay #$relayId closed: ${(relayBytes / 1048576).toStringAsFixed(1)}MB in '
+              '${seconds.toStringAsFixed(1)}s = ${mbps.toStringAsFixed(1)} Mbps '
+              '(blocks=$blocksServed cacheHits=$cacheHits client=$clientPort)',
+        );
+      }
       client.close(force: true);
       try {
         await resp.close();
@@ -270,11 +346,46 @@ class NetdiskTransport {
             refreshAttempts: attempts,
             maxRefreshAttempts: maxRefreshAttempts,
           );
+      // A signed URL that expired is recovered by going back through the
+      // redirecting stream URL: it mints a fresh URL per request, while
+      // re-resolving may keep returning the server's cached (dead) redirect for
+      // minutes — which is exactly what turned a seek into a 20 s stall.
+      if (shouldUseRedirectFallback(
+        statusCode: fetch.statusCode,
+        connectionFailed: fetch.connectionFailed,
+        redirectUrl: route.redirectUrl,
+        activeUrl: route.upstreamUrl,
+      )) {
+        route.upstreamUrl = route.redirectUrl!;
+        debugPrint(
+          'MEDIO-TRANSPORT upstream expired (${fetch.statusCode}) -> '
+          'per-request redirect URL, retrying block=$blockIndex',
+        );
+        AppLog.instance.w(
+          'NetdiskTransport',
+          'signed URL expired (${fetch.statusCode}); using per-request '
+              'redirect upstream',
+        );
+        _scheduleRepin(route);
+        continue;
+      }
+      // Per-block logging would be one line per 4 MB (~1–5/s on a 40 Mbps
+      // remux), so only the exceptional outcomes are logged; routine throughput
+      // already goes to AppLog.
       if (!canRefresh) return _BlockOutcome.failed(fetch.statusCode);
       attempts++;
+      debugPrint(
+        'MEDIO-TRANSPORT re-resolve #$attempts after '
+        '${fetch.statusCode ?? 'connection failure'} block=$blockIndex',
+      );
       await Future<void>.delayed(reResolveDelay(attempts));
       try {
+        final refreshedAt = DateTime.now();
         final fresh = await route.refresh!();
+        debugPrint(
+          'MEDIO-TRANSPORT re-resolve #$attempts done in '
+          '${DateTime.now().difference(refreshedAt).inMilliseconds}ms',
+        );
         route.upstreamUrl = fresh.url;
         if (fresh.headers.isNotEmpty) route.headers = fresh.headers;
         AppLog.instance.i(
@@ -287,6 +398,32 @@ class NetdiskTransport {
         return _BlockOutcome.failed(fetch.statusCode);
       }
     }
+  }
+
+  /// Re-pins a freshly resolved CDN URL in the background after falling back to
+  /// the redirecting stream URL, so the common path stays on the direct CDN.
+  ///
+  /// At most once per route: if the re-resolved URL turns out to be stale too
+  /// (the server caches its redirect for minutes), the route stays on the
+  /// redirecting URL instead of ping-ponging between two dead URLs.
+  void _scheduleRepin(_Route route) {
+    final refresh = route.refresh;
+    if (refresh == null || route.repinned) return;
+    route.repinned = true;
+    unawaited(
+      Future<void>.delayed(const Duration(seconds: 2), () async {
+        if (!_routes.containsValue(route)) return;
+        try {
+          final fresh = await refresh();
+          if (!_routes.containsValue(route)) return;
+          route.upstreamUrl = fresh.url;
+          if (fresh.headers.isNotEmpty) route.headers = fresh.headers;
+          debugPrint('MEDIO-TRANSPORT re-pinned CDN upstream after expiry');
+        } catch (e) {
+          AppLog.instance.w('NetdiskTransport', 're-pin failed: $e');
+        }
+      }),
+    );
   }
 
   Future<_UpstreamFetch> _fetchBlock(
@@ -306,7 +443,9 @@ class NetdiskTransport {
       route.headers.forEach(request.headers.set);
       request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
+      final fetchStartedAt = DateTime.now();
       final upResp = await request.close();
+      final headersMs = DateTime.now().difference(fetchStartedAt).inMilliseconds;
       if (upResp.statusCode == HttpStatus.partialContent) {
         final bytes = await _collectBytes(upResp);
         return _UpstreamFetch.ranged(
@@ -318,12 +457,19 @@ class NetdiskTransport {
         );
       }
       if (upResp.statusCode == HttpStatus.ok) {
+        debugPrint(
+          'MEDIO-TRANSPORT block #$blockIndex WHOLE-FILE 200 (range ignored)',
+        );
         return _UpstreamFetch.wholeFile(_WholeFileRelay(upResp));
       }
+      debugPrint(
+        'MEDIO-TRANSPORT block #$blockIndex status=${upResp.statusCode} '
+        'headers=${headersMs}ms',
+      );
       await upResp.drain<void>();
       return _UpstreamFetch.status(upResp.statusCode);
     } catch (e) {
-      AppLog.instance.d('NetdiskTransport', 'upstream fetch failed: $e');
+      debugPrint('MEDIO-TRANSPORT block #$blockIndex failed: $e');
       return _UpstreamFetch.connectionFailure();
     }
   }
@@ -351,13 +497,20 @@ class _Route {
     required this.upstreamUrl,
     required this.headers,
     required this.cacheKey,
+    this.redirectUrl,
     this.refresh,
   });
 
   String upstreamUrl;
   Map<String, String> headers;
   final String cacheKey;
+
+  /// Stable server stream URL that redirects to a fresh signed URL per request.
+  final String? redirectUrl;
   final Future<ResolvedStreamTarget> Function()? refresh;
+
+  /// Whether the background re-pin already ran for this route.
+  bool repinned = false;
 }
 
 class _WholeFileRelay {

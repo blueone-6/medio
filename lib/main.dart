@@ -1,3 +1,6 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
@@ -7,7 +10,6 @@ import 'core/logging/app_log.dart';
 import 'core/logging/crash_reporter.dart';
 import 'core/logging/perf.dart';
 import 'core/storage/local_storage.dart';
-import 'core/layout/platform_layout.dart';
 import 'core/tv/tv_detection.dart';
 import 'providers/settings_provider.dart';
 import 'services/settings_service.dart';
@@ -24,8 +26,9 @@ Future<void> main() async {
     await PerfTracer.hydrateFromLogs();
     await window.initDesktopWindow();
     await detectAndroidTv();
-    // TV uses ExoPlayer — skip loading libmpv on startup (saves ~100MB+ RAM).
-    if (!isAndroidTv) {
+    // Android (TV + phone) plays through Media3 ExoPlayer — skip loading
+    // libmpv on startup (saves ~100MB+ RAM). Desktop still needs media_kit.
+    if (!kIsWeb && !Platform.isAndroid) {
       MediaKit.ensureInitialized();
     }
 

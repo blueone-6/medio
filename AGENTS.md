@@ -2,7 +2,7 @@
 
 ## Project
 
-Cross-platform Flutter media client (`medio`): Emby/Jellyfin library browsing on **Windows desktop**, **Android phone**, and **Android TV**. Playback: **Android TV** uses ExoPlayer (`TvPlayerScreen`, `lib/core/player/tv_exo/`); **phone / desktop** use `media_kit` (libmpv) via `PlayerScreen`.
+Cross-platform Flutter media client (`medio`): Emby/Jellyfin library browsing on **Windows desktop**, **Android phone**, and **Android TV**. Playback: **Android TV** uses ExoPlayer (`TvPlayerScreen`, `lib/core/player/tv_exo/`); **Android phone** uses Media3 ExoPlayer (`ExoPlayerScreen`, `lib/screens/exo_player_screen.dart`, Dart bridge `lib/core/player/exo/` sharing the native `tv_exo` channels); **desktop** uses `media_kit` (libmpv) via `PlayerScreen`.
 
 ## Design Context
 
@@ -36,6 +36,26 @@ Strategic and visual specs live at the project root. **Read both before any UI w
 - Playback decision logic lives in `lib/core/player/` as pure functions (see
   `bogus_position_guard.dart`, `seek_step.dart`, `playback_resume.dart`) — keep
   new guard/recovery logic testable there instead of burying it in screens.
+- **Android audio/decoder binaries**: the Android app bundles
+  `android/app/src/main/jniLibs/arm64-v8a/libffmpegJNI.so` (FFmpeg 6.0, LGPL)
+  so AC3/EAC3/DTS/TrueHD remuxes have sound — the platform has no decoder for
+  them and media3 ships none. It is used only where MediaCodec fails, its Java
+  bindings are vendored from media3 1.4.1 (Apache-2.0; only change: one
+  compile-time-only nullness annotation dropped) under
+  `android/app/src/main/media3ffmpeg/`, and it is rebuilt with
+  `tool/build_ffmpeg_decoder.ps1` (needs WSL). The library is `arm64-v8a` only —
+  other ABIs skip the extension and keep the old behaviour — and R8 must not
+  strip its JNI-resolved member (`android/app/proguard-rules.pro`). Licenses:
+  `THIRD_PARTY_NOTICES.md`.
+- **Android installs must preserve app data.** `flutter install` (and some
+  `flutter run` cases) uninstalls the existing app first, wiping
+  `shared_prefs` (server URL, tokens, theme, playback settings). Install with
+  overwrite instead:
+  ```powershell
+  flutter build apk --release
+  adb install -r build\app\outputs\flutter-apk\app-release.apk
+  ```
+  Avoid `flutter install` unless a clean slate is intended.
 
 ## Testing
 

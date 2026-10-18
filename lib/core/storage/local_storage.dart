@@ -20,6 +20,7 @@ abstract final class StorageKeys {
   static const homeRecentPlayLimit = 'home_recent_play_limit';
   static const recentAddedWindowDays = 'recent_added_window_days';
   static const autoPlayNext = 'auto_play_next';
+  static const videoFitMode = 'video_fit_mode';
   static const playHistory = 'play_history_json';
   static const netdiskCacheEnabled = 'netdisk_cache_enabled';
   static const netdiskCacheLimitMb = 'netdisk_cache_limit_mb';

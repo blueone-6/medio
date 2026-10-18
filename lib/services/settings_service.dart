@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../core/layout/platform_layout.dart';
+import '../core/player/exo/video_fit_mode.dart';
 import '../core/player/netdisk_cache_defaults.dart';
 import '../core/storage/local_storage.dart';
 import '../core/theme/app_theme.dart';
@@ -107,6 +108,15 @@ class SettingsService {
 
   Future<void> setAutoPlayNext(bool v) =>
       _storage.setBool(StorageKeys.autoPlayNext, v);
+
+  /// 画面缩放模式（Android 手机 ExoPlayer）：适应 / 裁剪铺满 / 拉伸填满。
+  /// 默认「裁剪铺满」（等比例放大铺满，见 `VideoFitMode.fromName`）；未设置或
+  /// 已废弃的名字也回落到它。竖屏自动回退「适应」（见 `effectiveVideoFitMode`）。
+  VideoFitMode get videoFitMode =>
+      VideoFitMode.fromName(_storage.getString(StorageKeys.videoFitMode));
+
+  Future<void> setVideoFitMode(VideoFitMode m) =>
+      _storage.setString(StorageKeys.videoFitMode, m.name);
 
   // ── 网盘播放磁盘块缓存 ──
 

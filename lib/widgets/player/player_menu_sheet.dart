@@ -71,6 +71,23 @@ class _PlayerMenuSheetState extends State<PlayerMenuSheet> {
     ));
   }
 
+  /// Refresh the root page when the caller rebuilds with new rows — sheets whose
+  /// actions change a displayed value (e.g. subtitle offset) then update live
+  /// instead of looking unresponsive. Sub-pages keep their own snapshot.
+  @override
+  void didUpdateWidget(PlayerMenuSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(widget.rows, oldWidget.rows) && _stack.isNotEmpty) {
+      setState(() {
+        _stack[0] = _PlayerMenuPage(
+          title: widget.title,
+          countText: widget.countText,
+          rows: widget.rows,
+        );
+      });
+    }
+  }
+
   _PlayerMenuPage get _page => _stack.last;
 
   void _push(List<PlayerMenuRow> rows, String title, String? countText) {

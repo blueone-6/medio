@@ -1,3 +1,6 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -7,6 +10,7 @@ import '../core/layout/platform_layout.dart';
 import '../screens/home_screen.dart';
 import '../screens/library_screen.dart';
 import '../screens/media_detail_screen.dart';
+import '../screens/exo_player_screen.dart';
 import '../screens/player_screen.dart';
 import '../screens/tv_player_screen.dart';
 import '../screens/recent_play_screen.dart';
@@ -77,6 +81,9 @@ GoRouter createAppRouter() {
               ticksRaw != null ? int.tryParse(ticksRaw) : null;
           final pctRaw = state.uri.queryParameters['playedPercentage'];
           final hintPct = pctRaw != null ? double.tryParse(pctRaw) : null;
+          // TV: ExoPlayer via TvPlayerScreen. Android phone: ExoPlayer via
+          // ExoPlayerScreen. Desktop: media_kit (libmpv) via PlayerScreen.
+          final isAndroidPhone = !kIsWeb && Platform.isAndroid && !isAndroidTv;
           final screen = isAndroidTv
               ? TvPlayerScreen(
                   key: ValueKey('tv-$itemId'),
@@ -84,12 +91,19 @@ GoRouter createAppRouter() {
                   hintPositionTicks: hintTicks,
                   hintPlayedPercentage: hintPct,
                 )
-              : PlayerScreen(
-                  key: ValueKey(itemId),
-                  itemId: itemId,
-                  hintPositionTicks: hintTicks,
-                  hintPlayedPercentage: hintPct,
-                );
+              : isAndroidPhone
+                  ? ExoPlayerScreen(
+                      key: ValueKey('exo-$itemId'),
+                      itemId: itemId,
+                      hintPositionTicks: hintTicks,
+                      hintPlayedPercentage: hintPct,
+                    )
+                  : PlayerScreen(
+                      key: ValueKey(itemId),
+                      itemId: itemId,
+                      hintPositionTicks: hintTicks,
+                      hintPlayedPercentage: hintPct,
+                    );
           // TV: skip fade/scale — the secondary animation squeezes the home
           // route underneath to ~8px during pop and triggers layout overflows.
           if (deviceTypeOf(context) == DeviceType.tv) {

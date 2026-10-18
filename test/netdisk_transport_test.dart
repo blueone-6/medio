@@ -16,16 +16,38 @@ void main() {
   late String mode;
   late int requestCount;
   final ranges = <String?>[];
+  final paths = <String>[];
 
   setUp(() async {
     body = Uint8List.fromList(List<int>.generate(total, (i) => i & 0xff));
     ranges.clear();
+    paths.clear();
     requestCount = 0;
     mode = 'range';
     upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     port = upstream.port;
     upstream.listen((req) async {
       requestCount++;
+      paths.add(req.uri.path);
+      // A pinned, already-expired signed CDN URL.
+      if ((mode == 'expired' || mode == 'dead') && req.uri.path == '/stale.mkv') {
+        req.response.statusCode = HttpStatus.forbidden;
+        await req.response.close();
+        return;
+      }
+      if (mode == 'dead' && req.uri.path == '/dead.mkv') {
+        req.response.statusCode = HttpStatus.forbidden;
+        await req.response.close();
+        return;
+      }
+      // The Emby stream URL: 307s to a freshly minted URL on every request.
+      if (mode == 'expired' && req.uri.path == '/stream') {
+        req.response.statusCode = HttpStatus.temporaryRedirect;
+        req.response.headers.set(
+            HttpHeaders.locationHeader, 'http://127.0.0.1:$port/fresh.mkv');
+        await req.response.close();
+        return;
+      }
       if (mode == '307' && req.uri.path == '/stream') {
         req.response.statusCode = HttpStatus.temporaryRedirect;
         req.response.headers
@@ -168,6 +190,50 @@ void main() {
     final bytes = await _get(local);
     expect(bytes.length, total);
     expect(bytes.sublist(0, 64), body.sublist(0, 64));
+  });
+
+  test('an expired pinned URL recovers through the redirect upstream', () async {
+    // The bug this guards: the transport pins one pre-resolved signed CDN URL,
+    // which expires mid-session. Re-resolving can hand back the server's cached
+    // (still dead) redirect, so recovery has to go through the redirecting
+    // stream URL instead — that is what turned a 20 s seek stall into a normal
+    // seek.
+    mode = 'expired';
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/stale.mkv',
+      cacheKey: 'item/expired',
+      redirectUrl: 'http://127.0.0.1:$port/stream',
+      refresh: () async =>
+          throw StateError('refresh must not be needed when the URL expired'),
+    );
+
+    final bytes = await _get(local);
+
+    expect(bytes.length, total);
+    expect(bytes.sublist(0, 64), body.sublist(0, 64));
+    expect(paths, contains('/fresh.mkv'));
+  });
+
+  test('a dead URL and a dead redirect give up instead of looping', () async {
+    mode = 'dead';
+    var refreshes = 0;
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/stale.mkv',
+      cacheKey: 'item/dead',
+      redirectUrl: 'http://127.0.0.1:$port/dead.mkv',
+      refresh: () async {
+        refreshes++;
+        return ResolvedStreamTarget(url: 'http://127.0.0.1:$port/dead.mkv');
+      },
+    );
+
+    final bytes = await _get(local);
+
+    // No data reaches the client, and the recovery budget is spent once per
+    // allowed refresh attempt: the request fails instead of retrying forever.
+    expect(bytes.length, lessThan(total));
+    expect(refreshes, lessThanOrEqualTo(NetdiskTransport.maxRefreshAttempts));
+    expect(requestCount, lessThanOrEqualTo(8));
   });
 
   test('cache hit still answers ranged requests with 206 + content-range',

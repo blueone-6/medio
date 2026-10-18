@@ -10,93 +10,93 @@ class TvExoPlayerState {
   const TvExoPlayerState({
     this.position = Duration.zero,
     this.duration = Duration.zero,
+    this.bufferedPosition = Duration.zero,
     this.isPlaying = false,
     this.isBuffering = false,
   });
 
   final Duration position;
   final Duration duration;
+
+  /// How far ahead the buffered range reaches — shown while stall-buffering.
+  final Duration bufferedPosition;
   final bool isPlaying;
   final bool isBuffering;
 
   TvExoPlayerState copyWith({
     Duration? position,
     Duration? duration,
+    Duration? bufferedPosition,
     bool? isPlaying,
     bool? isBuffering,
   }) {
     return TvExoPlayerState(
       position: position ?? this.position,
       duration: duration ?? this.duration,
+      bufferedPosition: bufferedPosition ?? this.bufferedPosition,
       isPlaying: isPlaying ?? this.isPlaying,
       isBuffering: isBuffering ?? this.isBuffering,
     );
   }
 }
 
-/// Dart bridge to Android TV ExoPlayer (Media3 + SurfaceView).
-class TvExoPlayer {
-  TvExoPlayer() {
-    startListening();
-  }
+/// App-lifetime listener on the shared native ExoPlayer event channel.
+///
+/// Same reason as the phone bridge: `EventChannel.cancel()` drops the
+/// channel's shared Dart message handler, so a screen disposing after the next
+/// episode already subscribed would silence its ready/position events.
+class _TvExoEventPump {
+  _TvExoEventPump._();
 
-  static const _method = MethodChannel('media_client/tv_exo_player');
+  static final _TvExoEventPump instance = _TvExoEventPump._();
+
   static const _events = EventChannel('media_client/tv_exo_player_events');
 
-  final _stateController = StreamController<TvExoPlayerState>.broadcast();
-  final _errorController = StreamController<String>.broadcast();
-  final _completedController = StreamController<void>.broadcast();
-  final _readyController = StreamController<void>.broadcast();
+  final state = StreamController<TvExoPlayerState>.broadcast();
+  final error = StreamController<String>.broadcast();
+  final completed = StreamController<void>.broadcast();
+  final ready = StreamController<void>.broadcast();
 
-  StreamSubscription<dynamic>? _eventSub;
-  TvExoPlayerState _state = const TvExoPlayerState();
+  TvExoPlayerState latest = const TvExoPlayerState();
 
-  Stream<TvExoPlayerState> get stateStream => _stateController.stream;
-  Stream<String> get errorStream => _errorController.stream;
-  Stream<void> get completedStream => _completedController.stream;
-  Stream<void> get readyStream => _readyController.stream;
+  StreamSubscription<dynamic>? _sub;
 
-  TvExoPlayerState get state => _state;
-
-  void startListening() {
-    _eventSub ??= _events.receiveBroadcastStream().listen(
-          _onEvent,
+  void attach(int sessionId) {
+    _sub ??= _events.receiveBroadcastStream({'sessionId': sessionId}).listen(
+          _dispatch,
           onError: (Object e) {
             AppLog.instance.e('TvExoPlayer', 'event channel error: $e');
           },
         );
   }
 
-  void _onEvent(dynamic raw) {
+  void _dispatch(dynamic raw) {
     if (raw is! Map) return;
     final event = raw['event']?.toString() ?? '';
     switch (event) {
       case 'position':
         final posMs = (raw['positionMs'] as num?)?.toInt() ?? 0;
         final durMs = (raw['durationMs'] as num?)?.toInt() ?? 0;
-        final playing = raw['isPlaying'] == true;
-        final buffering = raw['isBuffering'] == true;
-        _state = _state.copyWith(
+        latest = latest.copyWith(
           position: Duration(milliseconds: posMs),
           duration: Duration(milliseconds: durMs),
-          isPlaying: playing,
-          isBuffering: buffering,
+          bufferedPosition:
+              Duration(milliseconds: (raw['bufferedPositionMs'] as num?)?.toInt() ?? 0),
+          isPlaying: raw['isPlaying'] == true,
+          isBuffering: raw['isBuffering'] == true,
         );
-        _stateController.add(_state);
+        state.add(latest);
       case 'error':
-        final message = raw['message']?.toString() ?? 'playback error';
-        _errorController.add(message);
+        error.add(raw['message']?.toString() ?? 'playback error');
       case 'completed':
-        _completedController.add(null);
+        completed.add(null);
       case 'ready':
         final readyPosMs = (raw['positionMs'] as num?)?.toInt();
         if (readyPosMs != null) {
-          _state = _state.copyWith(
-            position: Duration(milliseconds: readyPosMs),
-          );
-          _stateController.add(_state);
+          latest = latest.copyWith(position: Duration(milliseconds: readyPosMs));
+          state.add(latest);
         }
-        _readyController.add(null);
+        ready.add(null);
       case 'hdr_output':
         AppLog.instance.i(
           'TvExoPlayer',
@@ -108,6 +108,32 @@ class TvExoPlayer {
         break;
     }
   }
+}
+
+/// Dart bridge to Android TV ExoPlayer (Media3 + SurfaceView).
+class TvExoPlayer {
+  TvExoPlayer() : sessionId = ++_sessionSeq {
+    startListening();
+  }
+
+  static const _method = MethodChannel('media_client/tv_exo_player');
+
+  static final _pump = _TvExoEventPump.instance;
+
+  static int _sessionSeq = 0;
+
+  /// Id of this screen's playback session — native ignores a stale
+  /// `stop`/`dispose` from the previous episode's screen.
+  final int sessionId;
+
+  Stream<TvExoPlayerState> get stateStream => _pump.state.stream;
+  Stream<String> get errorStream => _pump.error.stream;
+  Stream<void> get completedStream => _pump.completed.stream;
+  Stream<void> get readyStream => _pump.ready.stream;
+
+  TvExoPlayerState get state => _pump.latest;
+
+  void startListening() => _pump.attach(sessionId);
 
   Future<void> setSource({
     required String url,
@@ -118,6 +144,7 @@ class TvExoPlayer {
     bool isHdrContent = false,
     String? videoRange,
   }) async {
+    _pump.latest = const TvExoPlayerState();
     AppLog.instance.i(
       'TvExoPlayer',
       'setSource url=$url start=${startPosition.inSeconds}s '
@@ -131,6 +158,7 @@ class TvExoPlayer {
       'subtitleMime': subtitleMime,
       'isHdrContent': isHdrContent,
       'videoRange': videoRange,
+      'sessionId': sessionId,
     });
   }
 
@@ -146,32 +174,28 @@ class TvExoPlayer {
   Future<void> setPlaybackSpeed(double speed) =>
       _method.invokeMethod<void>('setPlaybackSpeed', {'speed': speed});
 
-  Future<void> stop() => _method.invokeMethod<void>('stop');
+  Future<void> stop() =>
+      _method.invokeMethod<void>('stop', {'sessionId': sessionId});
 
   Future<TvExoPlayerState> pollState() async {
     final raw = await _method.invokeMapMethod<String, dynamic>('getState');
-    if (raw == null) return _state;
+    if (raw == null) return _pump.latest;
     final posMs = (raw['positionMs'] as num?)?.toInt() ?? 0;
     final durMs = (raw['durationMs'] as num?)?.toInt() ?? 0;
-    _state = _state.copyWith(
+    _pump.latest = _pump.latest.copyWith(
       position: Duration(milliseconds: posMs),
       duration: Duration(milliseconds: durMs),
       isPlaying: raw['isPlaying'] == true,
       isBuffering: raw['isBuffering'] == true,
     );
-    return _state;
+    return _pump.latest;
   }
 
   Future<void> dispose() async {
-    await _eventSub?.cancel();
-    _eventSub = null;
+    // Shared pump outlives this screen — see _TvExoEventPump.
     try {
-      await _method.invokeMethod<void>('dispose');
+      await _method.invokeMethod<void>('dispose', {'sessionId': sessionId});
     } catch (_) {}
-    await _stateController.close();
-    await _errorController.close();
-    await _completedController.close();
-    await _readyController.close();
   }
 }
 

@@ -10,6 +10,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Visual Studio's bundled CMake can launch Windows PowerShell with a module
+# path inherited from PowerShell 7. Explicitly load the matching Utility module
+# so Get-FileHash and Invoke-WebRequest remain available in that environment.
+if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+  $utilityModule = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
+  if (-not (Test-Path $utilityModule)) {
+    throw "Microsoft.PowerShell.Utility module not found: $utilityModule"
+  }
+  Import-Module $utilityModule
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outDir = Join-Path $repoRoot 'build\windows\x64'
 $legacyPluginDir = Join-Path $repoRoot 'build\windows\x64\plugins\media_kit_libs_windows_video'

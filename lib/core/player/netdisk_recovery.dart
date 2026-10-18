@@ -26,6 +26,26 @@ bool shouldReResolve({
   return connectionFailed || isExpiryStatus(statusCode);
 }
 
+/// Whether an expired upstream should fall back to the per-request redirecting
+/// stream URL instead of waiting for `refresh()` to return something fresh.
+///
+/// A pre-resolved signed CDN URL is minted once and expires (115 CDN: within
+/// minutes), while the Emby `/stream` URL 307s to a *fresh* signed URL on every
+/// request. The server caches its own redirect for minutes, so a `refresh()`
+/// during expiry can keep handing back the same dead URL — retrying through the
+/// redirecting URL is what makes recovery fast (a seek instead of a stall).
+bool shouldUseRedirectFallback({
+  required int? statusCode,
+  required bool connectionFailed,
+  required String? redirectUrl,
+  required String? activeUrl,
+}) {
+  if (connectionFailed) return false;
+  if (!isExpiryStatus(statusCode)) return false;
+  if (redirectUrl == null || redirectUrl.isEmpty) return false;
+  return redirectUrl != activeUrl;
+}
+
 /// Backoff before refresh attempt number [attempt] (1-based).
 ///
 /// Kept short: a fresh URL usually resolves in well under a second, and the

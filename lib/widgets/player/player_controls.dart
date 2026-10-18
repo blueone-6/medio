@@ -294,7 +294,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
   static const _foreground = PlayerPaletteDefaults.foreground;
   static const _foregroundDim = PlayerPaletteDefaults.foregroundDim;
-  static const _amber = PlayerPaletteDefaults.accent;
 
   Color _playerAccent(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1416,47 +1415,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     }
   }
 
-  Widget _buildSubOffsetButtons() {
-    final settings = ref.watch(settingsServiceProvider);
-    final offset = settings.subtitleOffsetMs;
-
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      _miniIconButton(
-          Icons.remove_rounded, '提前 0.1s', () => _adjustSubDelay(-100)),
-      SizedBox(
-        height: _hitSize,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 3),
-            child: Text(_fmtOffset(offset),
-                style: TextStyle(
-                  color: offset != 0 ? _amber : _foregroundDim,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                )),
-          ),
-        ),
-      ),
-      _miniIconButton(Icons.add_rounded, '延后 0.1s', () => _adjustSubDelay(100)),
-      if (!_isDpad)
-        IconButton(
-          style: _iconStyle,
-          tooltip: '精确调节',
-          icon: const Icon(Icons.timer_outlined, size: 20),
-          color: _foreground,
-          onPressed: _showSubtitleOffsetDialog,
-        )
-      else
-        _transportBtn(
-          icon: Icons.timer_outlined,
-          tooltip: '精确调节',
-          iconSize: 18,
-          onPressed: _showSubtitleOffsetDialog,
-        ),
-    ]);
-  }
-
   void _showSubtitleOffsetDialog() {
     _notify();
     final settings = ref.read(settingsServiceProvider);
@@ -1564,33 +1522,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     );
   }
 
-  Widget _miniIconButton(IconData icon, String tooltip, VoidCallback onTap) {
-    if (_isDpad) {
-      return TvFocusIconButton(
-        icon: icon,
-        size: _tvBtnSize,
-        iconSize: 18,
-        color: _foreground,
-        onActivate: onTap,
-        onFocusChange: (focused) {
-          if (focused) _notify();
-        },
-      );
-    }
-    return SizedBox(
-      width: 32,
-      height: _hitSize,
-      child: IconButton(
-        style: _iconStyle,
-        tooltip: tooltip,
-        padding: EdgeInsets.zero,
-        icon: Icon(icon, size: 20),
-        color: _foreground,
-        onPressed: onTap,
-      ),
-    );
-  }
-
   Widget _buildCompactMoreButton(
     BuildContext context,
     Color accent,
@@ -1623,7 +1554,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
     _showPlayerMenuSheet(
       title: '更多',
-      rowsBuilder: (popSheet) {
+      rowsBuilder: (popSheet, refresh) {
         final rateRows = [
           for (final r in _playbackRates)
             PlayerMenuRow(
@@ -1653,11 +1584,17 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
           PlayerMenuRow(label: '当前偏移', value: _fmtOffset(offset)),
           PlayerMenuRow(
             label: '提前 0.1s',
-            onTap: () => unawaited(_adjustSubDelay(-100)),
+            onTap: () {
+              unawaited(_adjustSubDelay(-100));
+              refresh();
+            },
           ),
           PlayerMenuRow(
             label: '延后 0.1s',
-            onTap: () => unawaited(_adjustSubDelay(100)),
+            onTap: () {
+              unawaited(_adjustSubDelay(100));
+              refresh();
+            },
           ),
           PlayerMenuRow(
             label: '精确调节',
@@ -1720,7 +1657,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     _showPlayerMenuSheet(
       title: '音轨',
       showCount: true,
-      rowsBuilder: (popSheet) => [
+      rowsBuilder: (popSheet, refresh) => [
         for (final a
             in tracks.audio.where((t) => t.id != 'auto' && t.id != 'no'))
           PlayerMenuRow(
@@ -1737,11 +1674,16 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   }
 
   /// Opens a centered [PlayerMenuSheet] with the same visual language as the
-  /// subtitle picker. [rowsBuilder] receives a callback that closes the sheet
-  /// so leaf actions can apply and dismiss in one tap.
+  /// subtitle picker. [rowsBuilder] receives callbacks that close the sheet
+  /// (so leaf actions can apply and dismiss in one tap) and refresh it (so
+  /// actions that change a displayed value update live instead of looking
+  /// unresponsive).
   Future<void> _showPlayerMenuSheet({
     required String title,
-    required List<PlayerMenuRow> Function(VoidCallback popSheet) rowsBuilder,
+    required List<PlayerMenuRow> Function(
+      VoidCallback popSheet,
+      VoidCallback refresh,
+    ) rowsBuilder,
     bool showCount = false,
   }) {
     return showGeneralDialog<void>(
@@ -1752,16 +1694,20 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
       transitionDuration: const Duration(milliseconds: 120),
       pageBuilder: (dialogContext, animation, secondaryAnimation) {
         void popSheet() => Navigator.of(dialogContext).pop();
-        final rows = rowsBuilder(popSheet);
-        final count = showCount
-            ? rows.where((r) => r.sectionTitle == null).length
-            : null;
-        return Center(
-          child: PlayerMenuSheet(
-            title: title,
-            countText: count == null ? null : '$count 条',
-            rows: rows,
-          ),
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final rows = rowsBuilder(popSheet, () => setSheetState(() {}));
+            final count = showCount
+                ? rows.where((r) => r.sectionTitle == null).length
+                : null;
+            return Center(
+              child: PlayerMenuSheet(
+                title: title,
+                countText: count == null ? null : '$count 条',
+                rows: rows,
+              ),
+            );
+          },
         );
       },
       transitionBuilder: (context, animation, secondaryAnimation, child) =>
@@ -1851,7 +1797,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     return _showPlayerMenuSheet(
       title: '字幕',
       showCount: true,
-      rowsBuilder: (popSheet) =>
+      rowsBuilder: (popSheet, refresh) =>
           _buildSubtitleMenuRows(tracks, currentSub, popSheet),
     );
   }
@@ -1941,8 +1887,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                 _notify();
                 _showAudioTrackPicker(tracks, currentAudio);
               }),
-              _spacer(_groupSpacing),
-              _buildSubOffsetSmallRow(),
               _spacer(_groupSpacing),
               if (widget.showEpisodeControls &&
                   widget.onToggleEpisodeList != null)
@@ -2082,51 +2026,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     );
   }
 
-  Widget _buildSubOffsetSmallRow() {
-    final settings = ref.watch(settingsServiceProvider);
-    final offset = settings.subtitleOffsetMs;
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      _miniCompactBtn(
-          Icons.remove_rounded, '提前 0.1s', () => _adjustSubDelay(-100)),
-      _spacer(1),
-      SizedBox(
-        height: _hitSize,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 2),
-            child: Text(
-              _fmtOffset(offset),
-              style: TextStyle(
-                color: offset != 0 ? _amber : _foregroundDim,
-                fontSize: 10.5,
-                fontWeight: FontWeight.w500,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
-          ),
-        ),
-      ),
-      _spacer(1),
-      _miniCompactBtn(Icons.add_rounded, '延后 0.1s', () => unawaited(_adjustSubDelay(100))),
-    ]);
-  }
-
-  Widget _miniCompactBtn(
-      IconData icon, String tooltip, VoidCallback onPressed) {
-    return SizedBox(
-      width: 28,
-      height: _hitSize,
-      child: IconButton(
-        style: _compactIconStyle,
-        tooltip: tooltip,
-        padding: EdgeInsets.zero,
-        icon: Icon(icon, size: 18),
-        color: _foreground,
-        onPressed: onPressed,
-      ),
-    );
-  }
-
   Widget _buildLandscapeRateMenu(double rate) {
     return Theme(
       data: _popupTheme(context),
@@ -2246,7 +2145,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
           _spacer(_groupSpacing),
           _buildAudioTrackMenu(tracks: tracks, currentAudio: currentAudio),
           _buildSubtitleMenu(tracks: tracks, currentSub: currentSub),
-          _buildSubOffsetButtons(),
           if (widget.showEpisodeControls && widget.onToggleEpisodeList != null) ...[
             _spacer(_groupSpacing),
             _transportBtn(
@@ -2400,7 +2298,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                   currentAudio: currentAudio,
                 ),
                 _buildSubtitleMenu(tracks: tracks, currentSub: currentSub),
-                _buildSubOffsetButtons(),
                 if (widget.showEpisodeControls &&
                     widget.onToggleEpisodeList != null)
                   _transportBtn(

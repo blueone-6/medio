@@ -14,6 +14,12 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
     private var bridge: TvExoPlayerBridge? = null
     private var activity: Activity? = null
 
+    /** Session id of the screen that owns the current event sink. */
+    private var activeSinkSessionId: Int? = null
+
+    private fun sessionIdOf(arguments: Any?): Int =
+        ((arguments as? Map<*, *>)?.get("sessionId") as? Number)?.toInt() ?: 0
+
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         val messenger = binding.binaryMessenger
         methodChannel = MethodChannel(messenger, CHANNEL).also {
@@ -23,11 +29,20 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
             channel.setStreamHandler(
                 object : EventChannel.StreamHandler {
                     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                        activeSinkSessionId = sessionIdOf(arguments)
                         bridge?.setEventSink(events)
                     }
 
                     override fun onCancel(arguments: Any?) {
-                        bridge?.setEventSink(null)
+                        // An episode switch subscribes the *new* screen before
+                        // the previous one cancels; clearing the sink blindly
+                        // here used to silence "ready"/position events for the
+                        // new episode (overlay stuck on 正在准备播放, subtitles
+                        // frozen). Only the current owner may clear it.
+                        if (activeSinkSessionId == sessionIdOf(arguments)) {
+                            activeSinkSessionId = null
+                            bridge?.setEventSink(null)
+                        }
                     }
                 },
             )
@@ -67,6 +82,12 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
                 val subtitleMime = call.argument<String>("subtitleMime")
                 val isHdrContent = call.argument<Boolean>("isHdrContent") == true
                 val videoRange = call.argument<String>("videoRange")
+                val positionEventIntervalMs =
+                    call.argument<Number>("positionEventIntervalMs")?.toLong() ?: 1000L
+                val handleAudioFocus = call.argument<Boolean>("handleAudioFocus") == true
+                val customSubtitleRendering =
+                    call.argument<Boolean>("customSubtitleRendering") == true
+                val sessionId = call.argument<Number>("sessionId")?.toInt() ?: 0
                 b.setSource(
                     url,
                     headers,
@@ -75,6 +96,10 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
                     subtitleMime,
                     isHdrContent,
                     videoRange,
+                    positionEventIntervalMs,
+                    handleAudioFocus,
+                    customSubtitleRendering,
+                    sessionId,
                 )
                 result.success(null)
             }
@@ -96,12 +121,49 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
                 b.setPlaybackSpeed(speed)
                 result.success(null)
             }
+            "setVolume" -> {
+                val volume = call.argument<Double>("volume") ?: 1.0
+                b.setVolume(volume)
+                result.success(null)
+            }
+            "getVolume" -> result.success(b.getVolume())
+            "setMuted" -> {
+                val muted = call.argument<Boolean>("muted") == true
+                b.setMuted(muted)
+                result.success(null)
+            }
+            "isMuted" -> result.success(b.isMuted())
+            "setSubtitleDelayMs" -> {
+                val delayMs = call.argument<Number>("delayMs")?.toLong() ?: 0L
+                b.setSubtitleDelayMs(delayMs)
+                result.success(null)
+            }
+            "setSubtitleFontScale" -> {
+                val scale = call.argument<Number>("scale")?.toFloat() ?: 1f
+                b.setSubtitleFontScale(scale)
+                result.success(null)
+            }
+            "setResizeMode" -> {
+                val mode = call.argument<Number>("mode")?.toInt() ?: 0
+                b.setResizeMode(mode)
+                result.success(null)
+            }
+            "getResizeMode" -> result.success(b.getResizeMode())
+            "getTracks" -> result.success(b.getTracks())
+            "selectAudioTrack" -> {
+                b.selectAudioTrack(call.argument<String>("id"))
+                result.success(null)
+            }
+            "selectTextTrack" -> {
+                b.selectTextTrack(call.argument<String>("id"))
+                result.success(null)
+            }
             "stop" -> {
-                b.stop()
+                b.stop(call.argument<Number>("sessionId")?.toInt() ?: 0)
                 result.success(null)
             }
             "dispose" -> {
-                b.dispose()
+                b.dispose(call.argument<Number>("sessionId")?.toInt() ?: 0)
                 result.success(null)
             }
             "getState" -> result.success(b.getState())

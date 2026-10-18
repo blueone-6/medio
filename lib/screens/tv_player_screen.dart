@@ -25,6 +25,7 @@ import '../utils/playback_http_headers.dart';
 import '../utils/player_route.dart';
 import '../widgets/error_view.dart';
 import '../widgets/loading_indicator.dart';
+import '../widgets/player/buffering_indicator.dart';
 import '../widgets/player/player_episode_panel.dart';
 import '../widgets/player/player_top_info.dart';
 import '../widgets/player/tv_exo_player_controls.dart';
@@ -51,7 +52,8 @@ class TvPlayerScreen extends ConsumerStatefulWidget {
   ConsumerState<TvPlayerScreen> createState() => _TvPlayerScreenState();
 }
 
-class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
+class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen>
+    with BufferingFeedbackMixin<TvPlayerScreen> {
   static const _chromeHideDelay = Duration(seconds: 4);
 
   late final TvExoPlayer _player;
@@ -112,6 +114,9 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
     _stateSub = _player.stateStream.listen((s) {
       if (!mounted) return;
       setState(() => _exoState = s);
+      syncBufferingFeedback(
+        waiting: s.isBuffering && !_loading && _error == null,
+      );
       _trySettlePlayback('position');
     });
     _readySub = _player.readyStream.listen((_) {
@@ -136,6 +141,7 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
   void dispose() {
     _chromeIdleTimer?.cancel();
     _settleTimeoutTimer?.cancel();
+    disposeBufferingFeedback();
     _unregisterActiveProxy();
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
     _playerFocusNode.dispose();
@@ -277,6 +283,9 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
         upstreamUrl: upstream,
         headers: headers,
         cacheKey: '${widget.itemId}/${pb.mediaSourceId}',
+        // Pre-resolved CDN URLs expire; the Emby stream URL 307s to a fresh one
+        // per request, which is the fast recovery path for a mid-session expiry.
+        redirectUrl: strm ? pb.streamUrl : null,
         refresh: refresh,
       );
       _activeProxyUrl = local;
@@ -848,6 +857,23 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen> {
                   color: Colors.black87,
                   child: LoadingIndicator(
                     message: _reconnecting ? '正在重连…' : '正在准备播放…',
+                  ),
+                ),
+              // Buffering mid-playback: keep the frame visible and add a pill, so
+              // a slow network reads as "loading" rather than a frozen picture.
+              // Gated here as well as in syncBufferingFeedback: a codec fallback
+              // flips _loading on between state events, and a stale stage must
+              // not paint over the reconnect overlay.
+              if (bufferingStage != BufferingStage.hidden &&
+                  !_loading &&
+                  _error == null)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: BufferingIndicator(
+                      stage: bufferingStage,
+                      bufferedPosition: _exoState.bufferedPosition,
+                      duration: _exoState.duration,
+                    ),
                   ),
                 ),
               // Key + tap layer above PlatformView (native view steals Flutter focus).

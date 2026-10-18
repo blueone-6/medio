@@ -10,6 +10,19 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    // Vendored AndroidX Media3 FFmpeg decoder bindings (Apache-2.0). They must
+    // keep their original `androidx.media3.decoder.ffmpeg` package because
+    // media3's DefaultRenderersFactory loads the renderer by reflection, so they
+    // are kept in a separate source directory rather than inside the app's own
+    // tree. The native library they call ships in
+    // src/main/jniLibs/arm64-v8a/libffmpegJNI.so — see THIRD_PARTY_NOTICES.md
+    // for the FFmpeg build (LGPL) and why it is bundled.
+    sourceSets {
+        getByName("main") {
+            java.srcDir("src/main/media3ffmpeg")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -31,6 +44,14 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")
+            // Minification is what makes the keep rule in proguard-rules.pro
+            // necessary (its JNI-resolved member is otherwise stripped), so it
+            // is stated explicitly instead of relying on Flutter's default.
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }
