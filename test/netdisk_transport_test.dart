@@ -18,11 +18,13 @@ void main() {
   late int responseDelayMs;
   final ranges = <String?>[];
   final paths = <String>[];
+  final truncatedBlocks = <int>{};
 
   setUp(() async {
     body = Uint8List.fromList(List<int>.generate(total, (i) => i & 0xff));
     ranges.clear();
     paths.clear();
+    truncatedBlocks.clear();
     requestCount = 0;
     responseDelayMs = 0;
     mode = 'range';
@@ -64,6 +66,15 @@ void main() {
       }
       final range = req.headers.value(HttpHeaders.rangeHeader);
       ranges.add(range);
+      // A CDN that ignores Range and always answers with the whole entity.
+      if (mode == 'norange') {
+        req.response.statusCode = HttpStatus.ok;
+        req.response.headers.set(HttpHeaders.contentLengthHeader, '$total');
+        req.response.headers.contentType = ContentType('video', 'mp4');
+        req.response.add(body);
+        await req.response.close();
+        return;
+      }
       var start = 0;
       var end = total - 1;
       if (range != null) {
@@ -83,7 +94,15 @@ void main() {
       if (responseDelayMs > 0) {
         await Future<void>.delayed(Duration(milliseconds: responseDelayMs));
       }
-      req.response.add(body.sublist(start, end + 1));
+      // A body shorter than the Content-Range it just declared, on the first
+      // request for one middle block only.
+      var sendEnd = end;
+      if (mode == 'short' &&
+          start == NetdiskTransport.chunkSize &&
+          truncatedBlocks.add(start)) {
+        sendEnd = start + (end - start) ~/ 2;
+      }
+      req.response.add(body.sublist(start, sendEnd + 1));
       await req.response.close();
     });
   });
@@ -347,6 +366,110 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 300));
     expect(upstreamStarts(ranges), everyElement(0),
         reason: 'prefetched beyond the requested range: $ranges');
+  });
+
+  test('a truncated upstream block is retried instead of ending the relay',
+      () async {
+    // A 206 body shorter than the Content-Range it declared used to be served
+    // as-is and end the relay (`data.length < chunkSize` broke the loop), so
+    // the player saw EOF in the middle of the file. It was also cached, which
+    // replayed the same hole on the next play.
+    mode = 'short';
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/short-block',
+    );
+
+    final bytes = await _get(local);
+
+    expect(bytes.length, total);
+    expect(bytes.sublist(0, 64), body.sublist(0, 64));
+    expect(bytes.sublist(total - 64), body.sublist(total - 64));
+    final blockOne = ranges
+        .where((r) =>
+            r?.startsWith('bytes=${NetdiskTransport.chunkSize}-') ?? false)
+        .length;
+    expect(blockOne, greaterThan(1),
+        reason: 'the truncated block was not re-fetched: $ranges');
+  });
+
+  test('a short block in the disk cache is discarded and re-fetched', () async {
+    final cacheDir = await Directory.systemTemp.createTemp('netdisk_short_blk');
+    addTearDown(() async {
+      if (await cacheDir.exists()) await cacheDir.delete(recursive: true);
+    });
+    final cache =
+        NetdiskBlockCache(rootDir: cacheDir, limitBytes: 64 * 1024 * 1024);
+    NetdiskTransport.instance.cache = cache;
+    // A block written by a run that accepted a truncated 206.
+    await cache.write(
+      'item/short-cache',
+      0,
+      Uint8List.sublistView(body, 0, NetdiskTransport.chunkSize ~/ 2),
+    );
+    await cache.writeTotal('item/short-cache', total);
+
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/short-cache',
+    );
+
+    final bytes = await _get(local);
+
+    expect(bytes.length, total);
+    expect(bytes.sublist(0, 64), body.sublist(0, 64));
+    expect(upstreamStarts(ranges), contains(0),
+        reason: 'the truncated cached block was not re-fetched');
+  });
+
+  test('a 200 that ignores Range is sliced to the requested offset', () async {
+    // Some netdisks answer `Range: bytes=N-` with a bare 200 and the whole
+    // file. Forwarding it from byte 0 made the player skip N bytes itself and
+    // kept a full-file relay open; the transport now answers 206 from N.
+    mode = 'norange';
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/whole-file',
+    );
+
+    final offset = 5 * 1000 * 1000;
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(local));
+    req.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-${offset + 99}');
+    final resp = await req.close();
+    expect(resp.statusCode, HttpStatus.partialContent);
+    expect(
+      resp.headers.value(HttpHeaders.contentRangeHeader),
+      'bytes $offset-${offset + 99}/$total',
+    );
+    final got = await _collect(resp);
+    client.close(force: true);
+    expect(got, body.sublist(offset, offset + 100));
+  });
+
+  test('a 200 that ignores Range serves an open-ended offset as 206', () async {
+    mode = 'norange';
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/whole-file-open',
+    );
+
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(local));
+    req.headers
+        .set(HttpHeaders.rangeHeader, 'bytes=${NetdiskTransport.chunkSize}-');
+    final resp = await req.close();
+    expect(resp.statusCode, HttpStatus.partialContent);
+    final got = await _collect(resp);
+    client.close(force: true);
+    expect(
+      got,
+      body.sublist(NetdiskTransport.chunkSize),
+    );
+    expect(
+      resp.headers.value(HttpHeaders.contentRangeHeader),
+      'bytes ${NetdiskTransport.chunkSize}-${total - 1}/$total',
+    );
   });
 }
 

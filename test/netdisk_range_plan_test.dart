@@ -75,4 +75,51 @@ void main() {
       expect(blockFetchEnd(blockIndex: 2, blockSize: 4, total: 10), 9);
     });
   });
+
+  group('expectedBlockLength', () {
+    test('unknown total cannot validate', () {
+      expect(
+        expectedBlockLength(blockIndex: 0, blockSize: 4, total: null),
+        isNull,
+      );
+    });
+
+    test('full blocks are blockSize', () {
+      expect(expectedBlockLength(blockIndex: 0, blockSize: 4, total: 10), 4);
+      expect(expectedBlockLength(blockIndex: 1, blockSize: 4, total: 10), 4);
+    });
+
+    test('last block is the remainder', () {
+      expect(expectedBlockLength(blockIndex: 2, blockSize: 4, total: 10), 2);
+      expect(expectedBlockLength(blockIndex: 0, blockSize: 4, total: 3), 3);
+    });
+
+    test('block past EOF expects nothing', () {
+      expect(expectedBlockLength(blockIndex: 3, blockSize: 4, total: 10), 0);
+    });
+  });
+
+  group('parseContentRangeHeader', () {
+    test('parses a ranged response', () {
+      final r = parseContentRangeHeader('bytes 10-29/100')!;
+      expect(r.start, 10);
+      expect(r.end, 29);
+      expect(r.total, 100);
+      expect(r.length, 20);
+    });
+
+    test('accepts an unknown total', () {
+      final r = parseContentRangeHeader('bytes 0-99/*')!;
+      expect(r.total, isNull);
+      expect(r.length, 100);
+    });
+
+    test('rejects malformed / absent headers', () {
+      expect(parseContentRangeHeader(null), isNull);
+      expect(parseContentRangeHeader(''), isNull);
+      expect(parseContentRangeHeader('bytes */100'), isNull);
+      expect(parseContentRangeHeader('bytes 29-10/100'), isNull);
+      expect(parseContentRangeHeader('items 0-1/2'), isNull);
+    });
+  });
 }

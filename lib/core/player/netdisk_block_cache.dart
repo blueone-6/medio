@@ -95,6 +95,15 @@ class NetdiskBlockCache {
 
   int _tmpSeq = 0;
 
+  /// Deletes a cached block (e.g. one that turned out to be truncated).
+  Future<void> delete(String cacheKey, int blockIndex) async {
+    if (!enabled) return;
+    try {
+      final file = _blockFile(cacheKey, blockIndex);
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
+  }
+
   /// Writes a whole block atomically (temp file + rename). Failures are
   /// non-fatal: playback still gets the bytes from the network path.
   Future<void> write(String cacheKey, int blockIndex, Uint8List bytes) async {

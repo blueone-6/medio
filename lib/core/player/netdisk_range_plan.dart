@@ -77,6 +77,63 @@ List<int> blockIndicesFor({
 /// Byte offset where [blockIndex] begins.
 int blockStartOffset(int blockIndex, int blockSize) => blockIndex * blockSize;
 
+/// Number of bytes a cached/fetched block must hold.
+///
+/// Every block is exactly [blockSize] bytes except the final one, which is the
+/// remainder of the file. Returns null when [total] is unknown, in which case a
+/// short block cannot be told apart from the file's last block.
+int? expectedBlockLength({
+  required int blockIndex,
+  required int blockSize,
+  int? total,
+}) {
+  if (total == null) return null;
+  final start = blockStartOffset(blockIndex, blockSize);
+  if (start >= total) return 0;
+  final remaining = total - start;
+  return remaining < blockSize ? remaining : blockSize;
+}
+
+/// Parsed upstream `Content-Range: bytes <start>-<end>/<total>` response.
+class ContentRangeHeader {
+  const ContentRangeHeader({
+    required this.start,
+    required this.end,
+    this.total,
+  });
+
+  final int start;
+  final int end;
+
+  /// Complete entity length, or null for `*`.
+  final int? total;
+
+  /// Declared payload length in bytes.
+  int get length => end - start + 1;
+
+  @override
+  String toString() => 'ContentRange($start-$end/${total ?? '*'})';
+}
+
+final RegExp _contentRangePattern = RegExp(r'^bytes\s+(\d+)-(\d+)/(\d+|\*)$');
+
+/// Parses a `Content-Range` response header, or null when absent/malformed.
+///
+/// Only the single-range form is accepted, which is all a byte-range CDN
+/// returns; anything else is treated as "no range information" so the caller
+/// falls back to the requested length.
+ContentRangeHeader? parseContentRangeHeader(String? value) {
+  if (value == null) return null;
+  final m = _contentRangePattern.firstMatch(value.trim());
+  if (m == null) return null;
+  final start = int.tryParse(m.group(1)!);
+  final end = int.tryParse(m.group(2)!);
+  if (start == null || end == null || end < start) return null;
+  final totalRaw = m.group(3)!;
+  final total = totalRaw == '*' ? null : int.tryParse(totalRaw);
+  return ContentRangeHeader(start: start, end: end, total: total);
+}
+
 /// Inclusive byte end for fetching [blockIndex], clamped to [total] when known.
 int blockFetchEnd({
   required int blockIndex,

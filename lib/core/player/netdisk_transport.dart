@@ -102,6 +102,15 @@ class NetdiskTransport {
   static const Duration _connectTimeout = Duration(seconds: 15);
   static const int maxRefreshAttempts = 2;
 
+  /// Retries for a 206 whose body is shorter than its own `Content-Range`.
+  ///
+  /// The old code accepted whatever arrived and then stopped the relay at the
+  /// first short block, which surfaced as an unexplained stall; a truncated
+  /// body also used to be cached and replayed. Retrying the same range is safe
+  /// because block bytes are immutable.
+  static const int maxShortBlockRetries = 2;
+  static const Duration shortBlockRetryDelay = Duration(milliseconds: 200);
+
   HttpServer? _server;
   int _nextRouteId = 1;
   final Map<String, _Route> _routes = {};
@@ -326,9 +335,7 @@ class NetdiskTransport {
         // shared single-flight slot instead of being re-fetched.
         final prefetched = _takeRecent(key);
         var block = prefetched?.bytes;
-        final fromCache = block != null;
-
-        block ??= await cache?.read(route.cacheKey, blockIndex);
+        final fromRecent = block != null;
 
         // A cache hit has no upstream response to read `total` from, so recover
         // it from the cached metadata. Without a known total the response would
@@ -336,6 +343,36 @@ class NetdiskTransport {
         // stream as non-seekable ("Cannot seek in this stream.").
         if (block != null && total == null) {
           total = await cache?.readTotal(route.cacheKey);
+        }
+
+        if (!fromRecent && block == null) {
+          block = await cache?.read(route.cacheKey, blockIndex);
+          if (block != null && total == null) {
+            total = await cache?.readTotal(route.cacheKey);
+          }
+        }
+        var fromDiskCache = !fromRecent && block != null;
+
+        // Reject a short block instead of serving it: a truncated block used to
+        // end the relay (the bytes the player still expected never arrived) and
+        // a short block cached by an earlier run was replayed forever.
+        if (block != null) {
+          final expected = expectedBlockLength(
+            blockIndex: blockIndex,
+            blockSize: chunkSize,
+            total: total,
+          );
+          if (expected != null && block.length != expected) {
+            debugPrint(
+              'MEDIO-TRANSPORT block #$blockIndex rejected '
+              '(${block.length}B, expected ${expected}B) route=${route.cacheKey}',
+            );
+            if (!fromRecent) {
+              await cache?.delete(route.cacheKey, blockIndex);
+            }
+            block = null;
+            fromDiskCache = false;
+          }
         }
 
         if (block == null || total == null) {
@@ -351,7 +388,15 @@ class NetdiskTransport {
           final relay = outcome.wholeFile;
           if (relay != null) {
             route.wholeFileMode = true;
-            return await _relayWholeFile(resp, relay, headersWritten, isHead);
+            return await _relayWholeFile(
+              resp,
+              relay,
+              headersWritten,
+              isHead,
+              pos,
+              requestedEnd,
+              total,
+            );
           }
           if (outcome.bytes == null) {
             if (block == null) break;
@@ -396,7 +441,7 @@ class NetdiskTransport {
         pos = blockStart + serveTo;
         relayBytes += slice.length;
         blocksServed++;
-        if (fromCache) cacheHits++;
+        if (fromDiskCache) cacheHits++;
         relayState.servedPos = pos;
 
         // Fetch the next blocks while the player consumes this one, so the
@@ -536,26 +581,77 @@ class NetdiskTransport {
         .set(HttpHeaders.contentRangeHeader, 'bytes $start-$last/$total');
   }
 
+  /// Relays an upstream response that ignored the client's `Range`.
+  ///
+  /// A bare 200 is legal ("here is the whole entity"), so the client's offset
+  /// has to be honoured here: the old code forwarded from byte 0 regardless and
+  /// let the player skip, which turned every later seek into a download from
+  /// the start of the file and kept a full-file relay open. When the entity
+  /// length is known we answer as a proper 206 and skip [start] bytes
+  /// ourselves; only a chunked response with no length falls back to 200.
   Future<void> _relayWholeFile(
     HttpResponse resp,
     _WholeFileRelay relay,
     bool headersWritten,
     bool isHead,
+    int start,
+    int? requestedEnd,
+    int? knownTotal,
   ) async {
+    final upstream = relay.response;
+    final contentLength = upstream.contentLength;
+    final total = contentLength >= 0 ? contentLength : knownTotal;
+    final canSatisfyRange = total != null && total > 0 && start < total;
     if (!headersWritten) {
-      resp.statusCode = HttpStatus.ok;
-      final ct = relay.response.headers.contentType;
-      if (ct != null) resp.headers.contentType = ct;
+      if (canSatisfyRange) {
+        _writeResponseHeaders(
+          resp,
+          ResolvedRange(start, requestedEnd),
+          total,
+          upstream.headers.contentType,
+        );
+      } else {
+        resp.statusCode = HttpStatus.ok;
+        final ct = upstream.headers.contentType;
+        if (ct != null) resp.headers.contentType = ct;
+      }
       if (isHead) {
-        await relay.response.drain<void>();
+        await upstream.drain<void>();
         await resp.close();
         return;
       }
       await resp.flush();
     }
-    await for (final chunk in relay.response) {
-      resp.add(chunk);
-      await resp.flush();
+
+    // Without a length the response stays a 200 and the client does its own
+    // skip from byte 0, so nothing must be skipped or truncated here. Once
+    // headers are written the client has already consumed `start` bytes from
+    // us, so the skip is required even if the total stays unknown.
+    final mustSkip = canSatisfyRange || headersWritten;
+    var skip = mustSkip ? start : 0;
+    var remaining =
+        mustSkip && requestedEnd != null ? requestedEnd - start + 1 : null;
+    await for (final chunk in upstream) {
+      var data = chunk;
+      if (skip > 0) {
+        if (data.length <= skip) {
+          skip -= data.length;
+          continue;
+        }
+        data = _sliceBytes(data, skip);
+        skip = 0;
+      }
+      if (remaining != null && data.length > remaining) {
+        data = _sliceBytes(data, 0, remaining);
+      }
+      if (data.isNotEmpty) {
+        resp.add(data);
+        await resp.flush();
+        if (remaining != null) {
+          remaining -= data.length;
+          if (remaining <= 0) break;
+        }
+      }
     }
   }
 
@@ -681,9 +777,30 @@ class NetdiskTransport {
     int? total,
   ) async {
     var attempts = 0;
+    var shortAttempts = 0;
     while (true) {
       final fetch = await _fetchBlock(route, blockIndex, total);
       if (fetch.wholeFile != null) return _BlockOutcome.whole(fetch.wholeFile!);
+      final shortBytes = fetch.shortBytes;
+      if (shortBytes != null) {
+        // A truncated body is not a usable block: serving it ends the relay
+        // early (the bytes the player still expects never arrive) and caching
+        // it would replay the same hole on the next play.
+        if (shortAttempts < maxShortBlockRetries) {
+          shortAttempts++;
+          debugPrint(
+            'MEDIO-TRANSPORT block #$blockIndex short/misaligned '
+            '($shortBytes bytes) retry $shortAttempts',
+          );
+          await Future<void>.delayed(shortBlockRetryDelay);
+          continue;
+        }
+        debugPrint(
+          'MEDIO-TRANSPORT block #$blockIndex giving up after '
+          '$shortAttempts short reads',
+        );
+        return _BlockOutcome.failed(null);
+      }
       if (fetch.bytes != null) {
         return _BlockOutcome.ranged(
           fetch.bytes!,
@@ -801,11 +918,33 @@ class NetdiskTransport {
           DateTime.now().difference(fetchStartedAt).inMilliseconds;
       if (upResp.statusCode == HttpStatus.partialContent) {
         final bytes = await _collectBytes(upResp);
+        final declared = parseContentRangeHeader(
+          upResp.headers.value(HttpHeaders.contentRangeHeader),
+        );
+        // The upstream's own Content-Range is authoritative: it says both what
+        // this body covers and how long the entity is. Without it, fall back to
+        // the requested interval.
+        final expectedLength = declared?.length ?? (end - start + 1);
+        if (declared != null && declared.start != start) {
+          debugPrint(
+            'MEDIO-TRANSPORT block #$blockIndex RANGE MISMATCH '
+            'requested=$start-$end got=${declared.start}-${declared.end}',
+          );
+          return _UpstreamFetch.short(bytes.length);
+        }
+        if (bytes.length < expectedLength) {
+          debugPrint(
+            'MEDIO-TRANSPORT block #$blockIndex TRUNCATED '
+            'got=${bytes.length}B declared=${expectedLength}B',
+          );
+          return _UpstreamFetch.short(bytes.length);
+        }
+        final block = bytes.length == expectedLength
+            ? bytes
+            : Uint8List.sublistView(bytes, 0, expectedLength);
         return _UpstreamFetch.ranged(
-          bytes,
-          _totalFromContentRange(
-                  upResp.headers.value(HttpHeaders.contentRangeHeader)) ??
-              total,
+          block,
+          declared?.total ?? total,
           upResp.headers.contentType,
         );
       }
@@ -835,13 +974,10 @@ class NetdiskTransport {
     return builder.takeBytes();
   }
 
-  static int? _totalFromContentRange(String? value) {
-    if (value == null) return null;
-    final slash = value.lastIndexOf('/');
-    if (slash < 0) return null;
-    final raw = value.substring(slash + 1).trim();
-    if (raw == '*') return null;
-    return int.tryParse(raw);
+  /// Byte view of [data] (HTTP chunk lists are not always [Uint8List]).
+  static Uint8List _sliceBytes(List<int> data, int start, [int? end]) {
+    final bytes = data is Uint8List ? data : Uint8List.fromList(data);
+    return Uint8List.sublistView(bytes, start, end);
   }
 }
 
@@ -920,18 +1056,28 @@ class _UpstreamFetch {
   _UpstreamFetch.ranged(this.bytes, this.total, this.contentType)
       : wholeFile = null,
         statusCode = null,
+        shortBytes = null,
         connectionFailed = false;
   _UpstreamFetch.wholeFile(this.wholeFile)
       : bytes = null,
         total = null,
         contentType = null,
         statusCode = null,
+        shortBytes = null,
         connectionFailed = false;
   _UpstreamFetch.status(this.statusCode)
       : bytes = null,
         total = null,
         contentType = null,
         wholeFile = null,
+        shortBytes = null,
+        connectionFailed = false;
+  _UpstreamFetch.short(this.shortBytes)
+      : bytes = null,
+        total = null,
+        contentType = null,
+        wholeFile = null,
+        statusCode = null,
         connectionFailed = false;
   _UpstreamFetch.connectionFailure()
       : bytes = null,
@@ -939,6 +1085,7 @@ class _UpstreamFetch {
         contentType = null,
         wholeFile = null,
         statusCode = null,
+        shortBytes = null,
         connectionFailed = true;
 
   final Uint8List? bytes;
@@ -946,6 +1093,10 @@ class _UpstreamFetch {
   final ContentType? contentType;
   final _WholeFileRelay? wholeFile;
   final int? statusCode;
+
+  /// Set when a 206 body was shorter than (or offset from) its own
+  /// `Content-Range`; the number is the bytes actually received.
+  final int? shortBytes;
   final bool connectionFailed;
 }
 
