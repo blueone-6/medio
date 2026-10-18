@@ -37,6 +37,19 @@ class NetdiskBlockCache {
   File _totalFile(String cacheKey) =>
       File('${_dirPath(cacheKey)}${Platform.pathSeparator}total.txt');
 
+  /// Whether [blockIndex] is already persisted for [cacheKey].
+  ///
+  /// A stat-only probe: the transport's block prefetcher uses it to skip a
+  /// fetch without paying for a full block read.
+  Future<bool> exists(String cacheKey, int blockIndex) async {
+    if (!enabled) return false;
+    try {
+      return await _blockFile(cacheKey, blockIndex).exists();
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Reads the cached total size for [cacheKey], or null when unknown.
   ///
   /// The transport needs the total up front to answer ranged requests with a

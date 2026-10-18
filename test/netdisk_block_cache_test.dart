@@ -35,6 +35,15 @@ void main() {
     expect(got.first, 42);
   });
 
+  test('exists reports persisted blocks without reading them', () async {
+    final cache = NetdiskBlockCache(rootDir: root, limitBytes: 1024);
+    expect(await cache.exists('item/1', 0), isFalse);
+    await cache.write('item/1', 0, bytes(16, 42));
+    expect(await cache.exists('item/1', 0), isTrue);
+    expect(await cache.exists('item/1', 1), isFalse);
+    expect(await cache.exists('item/2', 0), isFalse);
+  });
+
   test('separate cache keys and indices do not collide', () async {
     final cache = NetdiskBlockCache(rootDir: root, limitBytes: 4096);
     await cache.write('item/1', 0, bytes(4, 1));

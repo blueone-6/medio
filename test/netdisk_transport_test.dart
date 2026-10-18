@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -15,6 +15,7 @@ void main() {
   late int port;
   late String mode;
   late int requestCount;
+  late int responseDelayMs;
   final ranges = <String?>[];
   final paths = <String>[];
 
@@ -23,6 +24,7 @@ void main() {
     ranges.clear();
     paths.clear();
     requestCount = 0;
+    responseDelayMs = 0;
     mode = 'range';
     upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     port = upstream.port;
@@ -78,6 +80,9 @@ void main() {
         req.response.headers.set(HttpHeaders.contentLengthHeader, '$total');
       }
       req.response.headers.contentType = ContentType('video', 'mp4');
+      if (responseDelayMs > 0) {
+        await Future<void>.delayed(Duration(milliseconds: responseDelayMs));
+      }
       req.response.add(body.sublist(start, end + 1));
       await req.response.close();
     });
@@ -196,7 +201,7 @@ void main() {
     // The bug this guards: the transport pins one pre-resolved signed CDN URL,
     // which expires mid-session. Re-resolving can hand back the server's cached
     // (still dead) redirect, so recovery has to go through the redirecting
-    // stream URL instead — that is what turned a 20 s seek stall into a normal
+    // stream URL instead 鈥?that is what turned a 20 s seek stall into a normal
     // seek.
     mode = 'expired';
     final local = await NetdiskTransport.instance.register(
@@ -269,6 +274,99 @@ void main() {
     // Served entirely from cache: no upstream range requests.
     expect(ranges, isEmpty);
   });
+  test('concurrent connections share one upstream fetch per block', () async {
+    // Two player connections to the same file used to pull the same 4 MB block
+    // twice (observed as a 2.2x duplicate-fetch ratio in the field), splitting
+    // the per-connection CDN budget between identical bytes.
+    responseDelayMs = 150;
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/singleflight',
+    );
+
+    final results = await Future.wait([_get(local), _get(local)]);
+
+    for (final bytes in results) {
+      expect(bytes.length, total);
+      expect(bytes.sublist(0, 64), body.sublist(0, 64));
+    }
+    final starts = upstreamStarts(ranges);
+    expect(starts.length, greaterThan(1));
+    expect(starts.toSet().length, starts.length,
+        reason: 'duplicate upstream fetches: $ranges');
+  });
+
+  test('schedules the next blocks before the client asks for them', () async {
+    // The relay used to fetch serially: while the player consumed block N, the
+    // transport sat idle waiting on the next 4 MB fetch. The prefetcher kicks
+    // off blocks N+1/N+2 right after block N is served.
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/prefetch',
+    );
+
+    // Open-ended read (what the players send); consume exactly block 0, then
+    // disconnect — the prefetcher must still pull the remaining blocks.
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(local));
+    final resp = await req.close();
+    var received = 0;
+    await for (final chunk in resp) {
+      received += chunk.length;
+      if (received >= NetdiskTransport.chunkSize) break;
+    }
+    client.close(force: true);
+
+    final lastBlockStart = (total - 1) ~/ NetdiskTransport.chunkSize *
+        NetdiskTransport.chunkSize;
+    await _waitFor(
+      () => upstreamStarts(ranges).contains(lastBlockStart),
+      what: 'prefetch of the final block', ranges: ranges,
+    );
+    final starts = upstreamStarts(ranges);
+    expect(starts, contains(NetdiskTransport.chunkSize),
+        reason: 'block 1 was never prefetched: $starts');
+    for (final s in starts) {
+      expect(s, lessThan(total), reason: 'prefetched past EOF: $starts');
+    }
+  });
+
+  test('prefetch does not run past a bounded client range', () async {
+    final local = await NetdiskTransport.instance.register(
+      upstreamUrl: 'http://127.0.0.1:$port/movie.mp4',
+      cacheKey: 'item/prefetch-end',
+    );
+
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(local));
+    req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-99');
+    final resp = await req.close();
+    await _collect(resp);
+    client.close(force: true);
+
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(upstreamStarts(ranges), everyElement(0),
+        reason: 'prefetched beyond the requested range: $ranges');
+  });
+}
+
+/// Upstream range starts observed so far, in request order.
+List<int> upstreamStarts(List<String?> ranges) => [
+      for (final r in ranges)
+        if (r != null) int.parse(RegExp(r'bytes=(\d+)-').firstMatch(r)!.group(1)!),
+    ];
+
+Future<void> _waitFor(bool Function() condition,
+    {required String what,
+    List<String?> ranges = const [],
+    Duration timeout = const Duration(seconds: 5)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('timed out waiting for $what; ranges=$ranges');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+  }
 }
 
 Future<List<int>> _get(String url) async {

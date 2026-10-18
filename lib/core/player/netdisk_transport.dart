@@ -32,6 +32,34 @@ class NetdiskTransport {
   /// Upstream chunk / cache block size.
   static const int chunkSize = 4 * 1024 * 1024;
 
+  /// Blocks fetched ahead of the serving position, per connection.
+  ///
+  /// The netdisk CDNs throttle per connection (~10 Mbps observed), so the
+  /// serial "fetch 4 MB, then serve" loop tops out at one connection's budget
+  /// no matter how much link headroom exists. Fetching the next blocks while
+  /// the player consumes the current one hides that round-trip and lets the
+  /// per-file concurrency cap raise the effective throughput.
+  static const int prefetchDepth = 2;
+
+  /// Cap on concurrent upstream fetches for one file (serving fetch + the
+  /// prefetch window). Multiple player connections to the same file share
+  /// this budget through the single-flight map below.
+  ///
+  /// Sized for ~4 concurrent player connections (video/audio/text tracks of
+  /// one remux each pull serially): each gets its serving fetch plus part of
+  /// the prefetch window. The netdisk CDN throttles per connection, so this
+  /// cap is what sets the aggregate ceiling (~20 Mbps per connection).
+  static const int maxInflightPerFile = 8;
+
+  /// Recently completed fetches kept when the disk cache is off, so a block
+  /// prefetched by an eager connection is not re-fetched by a connection that
+  /// reaches it after its future was dropped. Shared by every reader (block
+  /// content is immutable); evicted LRU once [_recentCap] is exceeded.
+  ///
+  /// Sized to hold the whole prefetch window ([prefetchDepth] per active
+  /// connection): evicting an unconsumed prefetched block would re-fetch it.
+  static const int _recentCap = 8;
+
   static const Duration _connectTimeout = Duration(seconds: 15);
   static const int maxRefreshAttempts = 2;
 
@@ -39,8 +67,21 @@ class NetdiskTransport {
   int _nextRouteId = 1;
   final Map<String, _Route> _routes = {};
 
+  /// In-flight upstream fetches, keyed per file block. Concurrent player
+  /// connections (and the prefetcher) join the same future instead of
+  /// downloading identical bytes twice — that duplicate fetching measured
+  /// ~2.2x in the field and burned most of the CDN budget.
+  final Map<String, Future<_BlockOutcome>> _inflight = {};
+  final Map<String, int> _inflightByKey = {};
+  final Map<String, _BlockOutcome> _recent = {};
+
   /// Disk block cache; null (or a disabled cache) means no persistence.
   NetdiskBlockCache? cache;
+
+  bool get _cacheUsable => cache?.enabled ?? false;
+
+  static String _blockKey(String cacheKey, int blockIndex) =>
+      '$cacheKey|$blockIndex';
 
   /// Registers [upstreamUrl] and returns the localhost URL to hand the player.
   ///
@@ -71,10 +112,16 @@ class NetdiskTransport {
   }
 
   /// Drops the route behind [localUrl], if any.
+  ///
+  /// Also aborts the route's in-flight upstream fetches: the player is
+  /// replacing this route (stall recovery / re-open), and a zombie relay that
+  /// keeps downloading duplicates the new route's blocks.
   void unregister(String localUrl) {
     final segments = Uri.tryParse(localUrl)?.pathSegments;
     if (segments == null || segments.isEmpty) return;
-    if (_routes.remove(segments.first) != null) {
+    final route = _routes.remove(segments.first);
+    if (route != null) {
+      route.disposeClient();
       AppLog.instance
           .d('NetdiskTransport', 'route ${segments.first} unregistered');
     }
@@ -82,7 +129,13 @@ class NetdiskTransport {
 
   /// Closes the localhost server and clears all routes (shutdown / tests).
   Future<void> dispose() async {
+    for (final route in _routes.values) {
+      route.disposeClient();
+    }
     _routes.clear();
+    _inflight.clear();
+    _inflightByKey.clear();
+    _recent.clear();
     final server = _server;
     _server = null;
     if (server != null) await server.close(force: true);
@@ -148,7 +201,7 @@ class NetdiskTransport {
     // logcat-visible (the AppLog file is not reachable on a release install) so a
     // slow seek can be attributed to the transport or to the player.
     debugPrint(
-      'MEDIO-TRANSPORT relay #$relayId start range='
+      'MEDIO-TRANSPORT relay #$relayId route=${route.cacheKey} range='
       '${req.headers.value(HttpHeaders.rangeHeader) ?? '-'}',
     );
     const throughputLogEveryBytes = 32 * 1024 * 1024;
@@ -157,9 +210,6 @@ class NetdiskTransport {
     int? total;
     ContentType? contentType;
     var headersWritten = false;
-    final client = HttpClient()
-      ..autoUncompress = false
-      ..connectionTimeout = _connectTimeout;
 
     try {
       while (true) {
@@ -168,9 +218,15 @@ class NetdiskTransport {
 
         final blockIndex = pos ~/ chunkSize;
         final blockStart = blockStartOffset(blockIndex, chunkSize);
+        final key = _blockKey(route.cacheKey, blockIndex);
 
-        var block = await cache?.read(route.cacheKey, blockIndex);
+        // A completed prefetch (no disk cache) is served straight from the
+        // shared single-flight slot instead of being re-fetched.
+        final prefetched = _takeRecent(key);
+        var block = prefetched?.bytes;
         final fromCache = block != null;
+
+        block ??= await cache?.read(route.cacheKey, blockIndex);
 
         // A cache hit has no upstream response to read `total` from, so recover
         // it from the cached metadata. Without a known total the response would
@@ -182,11 +238,12 @@ class NetdiskTransport {
 
         if (block == null || total == null) {
           final fetchStartedAt = DateTime.now();
-          final outcome =
-              await _fetchBlockWithRecovery(route, blockIndex, total, client);
-          final fetchMs = DateTime.now().difference(fetchStartedAt).inMilliseconds;
+          final outcome = await _fetchShared(route, blockIndex, total);
+          final fetchMs =
+              DateTime.now().difference(fetchStartedAt).inMilliseconds;
           final relay = outcome.wholeFile;
           if (relay != null) {
+            route.wholeFileMode = true;
             return await _relayWholeFile(resp, relay, headersWritten, isHead);
           }
           if (outcome.bytes == null) {
@@ -201,10 +258,7 @@ class NetdiskTransport {
                     '${fetchMs}ms (${mbps.toStringAsFixed(1)} Mbps)',
               );
             }
-            if (outcome.total != null) {
-              total = outcome.total;
-              unawaited(cache?.writeTotal(route.cacheKey, total!));
-            }
+            total = outcome.total ?? total;
             contentType ??= outcome.contentType;
             block ??= outcome.bytes;
           }
@@ -221,10 +275,6 @@ class NetdiskTransport {
           }
           await resp.flush();
         }
-        if (!fromCache && cache != null) {
-          await cache!.write(route.cacheKey, blockIndex, data);
-        }
-
         final serveFrom = pos - blockStart;
         if (serveFrom < 0 || serveFrom >= data.length) break;
         var serveTo = data.length;
@@ -240,6 +290,10 @@ class NetdiskTransport {
         relayBytes += slice.length;
         blocksServed++;
         if (fromCache) cacheHits++;
+
+        // Fetch the next blocks while the player consumes this one, so the
+        // serial 4 MB round-trip never sits on the critical path.
+        _schedulePrefetch(route, blockIndex, total, requestedEnd);
 
         if (relayBytes - lastThroughputLogBytes >= throughputLogEveryBytes) {
           lastThroughputLogBytes = relayBytes;
@@ -271,7 +325,6 @@ class NetdiskTransport {
               '(blocks=$blocksServed cacheHits=$cacheHits client=$clientPort)',
         );
       }
-      client.close(force: true);
       try {
         await resp.close();
       } catch (_) {}
@@ -321,15 +374,129 @@ class NetdiskTransport {
     }
   }
 
+  /// Joins or starts the upstream fetch for one block.
+  ///
+  /// Concurrent relays and the prefetcher share the same future: the observed
+  /// field behaviour was 2-4 parallel Range connections pulling identical
+  /// blocks, wasting the CDN budget on duplicate bytes.
+  Future<_BlockOutcome> _fetchShared(
+    _Route route,
+    int blockIndex,
+    int? total,
+  ) {
+    final key = _blockKey(route.cacheKey, blockIndex);
+    final existing = _inflight[key];
+    if (existing != null) return existing;
+    _inflightByKey[route.cacheKey] = (_inflightByKey[route.cacheKey] ?? 0) + 1;
+    final fetchStartedAt = DateTime.now();
+    final future = _fetchBlockWithRecovery(route, blockIndex, total)
+        .then((outcome) async {
+          if (outcome.bytes != null) {
+            // Logcat-visible per-fetch line (the AppLog file is not reachable
+            // on a release install): achieved throughput per block is what
+            // separates a CDN-throttled stall from a player-side one.
+            final fetchMs =
+                DateTime.now().difference(fetchStartedAt).inMilliseconds;
+            debugPrint(
+              'MEDIO-TRANSPORT block #$blockIndex 206 '
+              'bytes=${outcome.bytes!.length} total=${fetchMs}ms '
+              'route=${route.cacheKey}',
+            );
+            // Persist before completing: the serving loop may consume the
+            // bytes straight from this future, and a second play (or another
+            // connection) must find them on disk.
+            await cache?.write(route.cacheKey, blockIndex, outcome.bytes!);
+            if (outcome.total != null) {
+              unawaited(cache?.writeTotal(route.cacheKey, outcome.total!));
+            }
+            if (!_cacheUsable) _remember(key, outcome);
+          }
+          return outcome;
+        })
+        .whenComplete(() {
+          _inflight.remove(key);
+          final n = (_inflightByKey[route.cacheKey] ?? 1) - 1;
+          if (n <= 0) {
+            _inflightByKey.remove(route.cacheKey);
+          } else {
+            _inflightByKey[route.cacheKey] = n;
+          }
+        });
+    _inflight[key] = future;
+    return future;
+  }
+
+  /// Remembers a completed fetch so a connection that reaches the block after
+  /// its future dropped does not re-download it (no-disk-cache setups).
+  void _remember(String key, _BlockOutcome outcome) {
+    _recent.remove(key);
+    _recent[key] = outcome;
+    while (_recent.length > _recentCap) {
+      _recent.remove(_recent.keys.first);
+    }
+  }
+
+  /// Returns a recently completed fetch for [key], if any.
+  ///
+  /// Read-only: several connections may be waiting on the same block, and the
+  /// entry is only dropped by the LRU cap in [_remember].
+  _BlockOutcome? _takeRecent(String key) => _recent[key];
+
+  /// Starts fetching the blocks after [servedIndex] without waiting for the
+  /// player to ask for them.
+  void _schedulePrefetch(
+    _Route route,
+    int servedIndex,
+    int? total,
+    int? requestedEnd,
+  ) {
+    // Whole-file upstreams (Range ignored) are relayed as one response;
+    // block prefetching does not apply.
+    if (route.wholeFileMode) return;
+    for (var i = 1; i <= prefetchDepth; i++) {
+      final index = servedIndex + i;
+      final start = blockStartOffset(index, chunkSize);
+      if (total != null && start >= total) break;
+      if (requestedEnd != null && start > requestedEnd) break;
+      if (_inflight.containsKey(_blockKey(route.cacheKey, index))) continue;
+      // A block that already completed (prefetched moments ago) must not be
+      // fetched a second time: it is either in `_recent` (no cache) or on
+      // disk, and `_inflight` no longer holds it.
+      if (_recent.containsKey(_blockKey(route.cacheKey, index))) continue;
+      final inFlight = _inflightByKey[route.cacheKey] ?? 0;
+      if (inFlight >= maxInflightPerFile) {
+        // One line per throttle event: shows when a stream is starved because
+        // sibling tracks are holding the whole per-file concurrency budget.
+        debugPrint(
+          'MEDIO-TRANSPORT prefetch cap reached: inFlight=$inFlight '
+          'servedBlock=$servedIndex',
+        );
+        break;
+      }
+      unawaited(_prefetchOne(route, index, total));
+    }
+  }
+
+  Future<void> _prefetchOne(_Route route, int blockIndex, int? total) async {
+    try {
+      if (_cacheUsable && await cache!.exists(route.cacheKey, blockIndex)) {
+        return;
+      }
+      await _fetchShared(route, blockIndex, total);
+    } catch (e) {
+      AppLog.instance
+          .d('NetdiskTransport', 'prefetch block #$blockIndex failed: $e');
+    }
+  }
+
   Future<_BlockOutcome> _fetchBlockWithRecovery(
     _Route route,
     int blockIndex,
     int? total,
-    HttpClient client,
   ) async {
     var attempts = 0;
     while (true) {
-      final fetch = await _fetchBlock(route, blockIndex, total, client);
+      final fetch = await _fetchBlock(route, blockIndex, total);
       if (fetch.wholeFile != null) return _BlockOutcome.whole(fetch.wholeFile!);
       if (fetch.bytes != null) {
         return _BlockOutcome.ranged(
@@ -430,7 +597,6 @@ class NetdiskTransport {
     _Route route,
     int blockIndex,
     int? total,
-    HttpClient client,
   ) async {
     final start = blockStartOffset(blockIndex, chunkSize);
     final end = blockFetchEnd(
@@ -439,7 +605,7 @@ class NetdiskTransport {
       total: total,
     );
     try {
-      final request = await client.getUrl(Uri.parse(route.upstreamUrl));
+      final request = await route.client.getUrl(Uri.parse(route.upstreamUrl));
       route.headers.forEach(request.headers.set);
       request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
@@ -511,6 +677,25 @@ class _Route {
 
   /// Whether the background re-pin already ran for this route.
   bool repinned = false;
+
+  /// Set once the upstream answered with a bare 200 (Range ignored): the
+  /// stream is then relayed whole and block prefetching is pointless.
+  bool wholeFileMode = false;
+
+  HttpClient? _client;
+
+  /// Upstream client shared by every relay and prefetch of this route, so a
+  /// TCP connection built for one block is reused by the next, and closing
+  /// one relay does not abort fetches the prefetcher is still counting on.
+  HttpClient get client => _client ??= HttpClient()
+    ..autoUncompress = false
+    ..connectionTimeout = NetdiskTransport._connectTimeout;
+
+  /// Aborts this route's upstream fetches (route replaced / shutdown).
+  void disposeClient() {
+    _client?.close(force: true);
+    _client = null;
+  }
 }
 
 class _WholeFileRelay {
