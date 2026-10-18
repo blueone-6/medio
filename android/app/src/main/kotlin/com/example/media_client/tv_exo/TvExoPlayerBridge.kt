@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
@@ -94,6 +95,29 @@ class TvExoPlayerBridge(
 
     /** Custom subtitle surface for the delayed muxed path; PlayerView's own is hidden. */
     private var delaySubtitleView: SubtitleView? = null
+
+    /**
+     * Keeps [applySubtitleLayout] in sync with the *actual* view size.
+     *
+     * The padding/font-size math is driven by discrete events (resize-mode,
+     * font-scale, video-size changes), none of which fire on a plain viewport
+     * resize — and a phone rotation is exactly that. Without this listener the
+     * portrait letterbox padding (e.g. ~866 px top+bottom for a 16:9 video on
+     * a 1080×2340 screen) stayed applied on the 2340×1080 landscape view: the
+     * height left for cues went negative and the muxed subtitles vanished for
+     * the rest of the session whenever the effective resize mode did not
+     * change across the rotation (画面模式=适应). The listener re-runs the
+     * layout only on a real size change, so it cannot feed back through
+     * setPadding → requestLayout.
+     */
+    private val subtitleLayoutListener =
+        View.OnLayoutChangeListener { v, _, _, _, _, oldLeft, oldTop, oldRight, oldBottom ->
+            val widthChanged = v.width != oldRight - oldLeft
+            val heightChanged = v.height != oldBottom - oldTop
+            if (widthChanged || heightChanged) {
+                applySubtitleLayout()
+            }
+        }
 
     /** Native (muxed) subtitle scale: user 字幕字号 / 42. */
     private var subtitleFontScale = 1f
@@ -299,6 +323,7 @@ class TvExoPlayerBridge(
         playerView = view
         player?.let { view.player = it }
         view.resizeMode = resizeMode
+        view.addOnLayoutChangeListener(subtitleLayoutListener)
         watchSurface(view)
         updateKeepScreenOn()
         Log.i(
@@ -364,6 +389,7 @@ class TvExoPlayerBridge(
 
     fun detachPlayerView(view: PlayerView) {
         if (playerView === view) {
+            view.removeOnLayoutChangeListener(subtitleLayoutListener)
             delaySubtitleView?.let { custom ->
                 view.removeView(custom)
             }
@@ -432,6 +458,12 @@ class TvExoPlayerBridge(
      * area instead of the bottom of the screen. The remaining height is then
      * the displayed video height, which is also what the text size fraction is
      * relative to (the same 5.5 % the Flutter overlay uses).
+     *
+     * Runs from [subtitleLayoutListener] whenever the view is actually resized
+     * (rotation), in addition to the discrete events (resize-mode /
+     * font-scale / video-size changes). media3's canvas output re-reads the
+     * padding and view size on every draw, so the [View.setPadding] applied
+     * here takes effect on the next frame without re-sending cues.
      */
     private fun applySubtitleLayout() {
         val view = playerView ?: return
