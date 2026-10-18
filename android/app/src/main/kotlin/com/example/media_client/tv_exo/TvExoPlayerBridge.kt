@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -82,6 +83,9 @@ class TvExoPlayerBridge(
 
     /** Muxed subtitle delay, ms ≥ 0 (positive = subtitles appear later). */
     private var subtitleDelayMs = 0L
+
+    /** Wall-clock of the last [logBufferLevel] line, to throttle it. */
+    private var lastBufferLogAtMs = 0L
 
     /**
      * Video resize mode (`AspectRatioFrameLayout.RESIZE_MODE_*`).
@@ -266,10 +270,34 @@ class TvExoPlayerBridge(
     private val positionRunnable = object : Runnable {
         override fun run() {
             emitPosition()
+            logBufferLevel()
             if (positionUpdatesActive) {
                 mainHandler.postDelayed(this, positionEventIntervalMs)
             }
         }
+    }
+
+    /**
+     * Logs how far ahead of the playhead the buffer is, every
+     * [BUFFER_LOG_INTERVAL_MS].
+     *
+     * This is the number the netdisk buffering investigation turns on: healthy
+     * transport throughput meant nothing while the buffer stayed at ~2.5 s, and
+     * the player only logs on state changes, so steady-state playback left no
+     * trace to compare a fix against.
+     */
+    private fun logBufferLevel() {
+        val p = player ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastBufferLogAtMs < BUFFER_LOG_INTERVAL_MS) return
+        lastBufferLogAtMs = now
+        val pos = p.currentPosition.coerceAtLeast(0)
+        val buffered = p.bufferedPosition.coerceAtLeast(0)
+        Log.i(
+            TAG,
+            "buffer pos=${pos / 1000}s ahead=${(buffered - pos) / 1000}s " +
+                "state=${p.playbackState} playing=${p.isPlaying}",
+        )
     }
 
     /**
@@ -541,7 +569,7 @@ class TvExoPlayerBridge(
 
     private fun buildPlayer(httpFactory: DefaultHttpDataSource.Factory): ExoPlayer {
         val mediaSourceFactory = DefaultMediaSourceFactory(context)
-            .setDataSourceFactory(httpFactory)
+            .setDataSourceFactory(LoggingDataSourceFactory(httpFactory))
         // media3 ships no software audio decoders, and this device's platform
         // codec list has AC3/EAC3 commented out, so Dolby remuxes would play
         // silently. `libffmpegJNI.so` (see THIRD_PARTY_NOTICES.md) supplies
@@ -1041,8 +1069,11 @@ class TvExoPlayerBridge(
     }
 
     companion object {
-        private const val TAG = "TvExoPlayer"
+        /// Shared with [LoggingDataSourceFactory] so every player-side line is
+        /// attributable with a single logcat filter.
+        internal const val TAG = "TvExoPlayer"
         private const val DELAY_TICK_MS = 100L
+        private const val BUFFER_LOG_INTERVAL_MS = 5_000L
         private const val CUE_HISTORY_WINDOW_MS = 180_000L
         private const val CUE_HISTORY_MAX_ENTRIES = 2048
 

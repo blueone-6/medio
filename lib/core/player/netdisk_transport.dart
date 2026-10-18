@@ -8,6 +8,7 @@ import '../logging/app_log.dart';
 import 'netdisk_block_cache.dart';
 import 'netdisk_range_plan.dart';
 import 'netdisk_recovery.dart';
+import 'netdisk_stale_reader.dart';
 import 'netdisk_types.dart';
 
 /// Localhost HTTP transport for **all** netdisk / strm playback.
@@ -34,21 +35,25 @@ class NetdiskTransport {
 
   /// Blocks fetched ahead of the serving position, per connection.
   ///
-  /// The netdisk CDNs throttle per connection (~10 Mbps observed), so the
+  /// The netdisk CDNs throttle per connection (~10–13 Mbps observed), so the
   /// serial "fetch 4 MB, then serve" loop tops out at one connection's budget
   /// no matter how much link headroom exists. Fetching the next blocks while
-  /// the player consumes the current one hides that round-trip and lets the
-  /// per-file concurrency cap raise the effective throughput.
-  static const int prefetchDepth = 2;
+  /// the player consumes the current one hides that round-trip and, just as
+  /// importantly, keeps several connections in flight: with the abandoned
+  /// readers now throttled (see [_sweepStaleReaders]) a single 4K playback
+  /// stream is the only consumer left, and the window depth is what sets its
+  /// throughput. Measured after the seek fix: 2 blocks ahead held ~28 Mbps —
+  /// exactly the remux's bitrate, so the buffer stayed flat and rebuffered.
+  static const int prefetchDepth = 4;
 
   /// Cap on concurrent upstream fetches for one file (serving fetch + the
   /// prefetch window). Multiple player connections to the same file share
   /// this budget through the single-flight map below.
   ///
-  /// Sized for ~4 concurrent player connections (video/audio/text tracks of
-  /// one remux each pull serially): each gets its serving fetch plus part of
-  /// the prefetch window. The netdisk CDN throttles per connection, so this
-  /// cap is what sets the aggregate ceiling (~20 Mbps per connection).
+  /// Sized for the serving fetch plus one connection's whole prefetch window
+  /// ([prefetchDepth]), with headroom for an audio track or a re-bootstrap
+  /// while the old route is still winding down. The netdisk CDN throttles per
+  /// connection, so this cap is what sets the aggregate ceiling.
   static const int maxInflightPerFile = 8;
 
   /// Recently completed fetches kept when the disk cache is off, so a block
@@ -58,7 +63,41 @@ class NetdiskTransport {
   ///
   /// Sized to hold the whole prefetch window ([prefetchDepth] per active
   /// connection): evicting an unconsumed prefetched block would re-fetch it.
-  static const int _recentCap = 8;
+  static const int _recentCap = 12;
+
+  /// Distance from the newest reader of the same file beyond which an older
+  /// reader counts as one the player has moved away from.
+  @visibleForTesting
+  static int staleDistanceBytes = 64 * 1024 * 1024;
+
+  /// How long both the newest and the judged reader must have been alive
+  /// before the stale rule applies. Covers the Matroska header/tail probes,
+  /// which finish in well under a second.
+  @visibleForTesting
+  static Duration staleGrace = const Duration(seconds: 6);
+
+  /// Delay inserted before each block of a stale reader.
+  ///
+  /// Throttled rather than closed: a load the player still (mis)uses would
+  /// surface as a network error, while one it abandoned simply stops
+  /// competing for the per-connection CDN budget. 4 MB / 8 s ≈ 4 Mbps.
+  @visibleForTesting
+  static Duration staleBlockDelay = const Duration(seconds: 8);
+
+  /// How long a reader may stay stale before the relay is closed outright.
+  ///
+  /// Player-side logs proved the abandoned loads are dead on the client
+  /// (`DataSource.close()` 26–79 ms after opening, zero bytes read) while the
+  /// socket stays open and keeps draining our open-ended response, so nothing
+  /// ever errors out on our side. After this long the relay is pure waste and
+  /// is dropped; the grace above keeps a genuinely concurrent reader (a second
+  /// track, a player that seeks and reopens) unharmed.
+  @visibleForTesting
+  static Duration staleDropAfter = const Duration(seconds: 30);
+
+  /// How often [_sweepStaleReaders] re-evaluates the readers of a file.
+  @visibleForTesting
+  static Duration staleSweepInterval = const Duration(seconds: 2);
 
   static const Duration _connectTimeout = Duration(seconds: 15);
   static const int maxRefreshAttempts = 2;
@@ -74,6 +113,17 @@ class NetdiskTransport {
   final Map<String, Future<_BlockOutcome>> _inflight = {};
   final Map<String, int> _inflightByKey = {};
   final Map<String, _BlockOutcome> _recent = {};
+
+  /// Active relays per file (`cacheKey`), for telling one player from several.
+  ///
+  /// A remux is read by a single ExoPlayer extractor, so a file with two live
+  /// relays is either a seek/re-bootstrap overlap or a zombie reader — the
+  /// difference decides whether surplus CDN bandwidth is wasted. Keyed by
+  /// [cacheKey] rather than route id because a re-bootstrap registers a new
+  /// route for the same file.
+  final Map<String, Map<int, _RelayState>> _activeRelays = {};
+
+  Timer? _staleSweeper;
 
   /// Disk block cache; null (or a disabled cache) means no persistence.
   NetdiskBlockCache? cache;
@@ -100,6 +150,7 @@ class NetdiskTransport {
     final server = await _ensureServer();
     final id = '${_nextRouteId++}';
     _routes[id] = _Route(
+      id: int.parse(id),
       upstreamUrl: upstreamUrl,
       headers: headers ?? const {},
       cacheKey: cacheKey,
@@ -107,7 +158,8 @@ class NetdiskTransport {
       refresh: refresh,
     );
     final local = 'http://127.0.0.1:${server.port}/$id';
-    AppLog.instance.i('NetdiskTransport', 'route $id registered (proxy=$local)');
+    AppLog.instance
+        .i('NetdiskTransport', 'route $id registered (proxy=$local)');
     return local;
   }
 
@@ -136,6 +188,9 @@ class NetdiskTransport {
     _inflight.clear();
     _inflightByKey.clear();
     _recent.clear();
+    _activeRelays.clear();
+    _staleSweeper?.cancel();
+    _staleSweeper = null;
     final server = _server;
     _server = null;
     if (server != null) await server.close(force: true);
@@ -172,6 +227,7 @@ class NetdiskTransport {
     }
     await _stream(req, route);
   }
+
   Future<void> _stream(HttpRequest req, _Route route) async {
     final resp = req.response;
     final isHead = req.method == 'HEAD';
@@ -197,13 +253,40 @@ class NetdiskTransport {
       'NetdiskTransport',
       'relay #$relayId start range=${req.headers.value(HttpHeaders.rangeHeader) ?? '-'} '
           'client=$clientPort upstream=${AppLog.redactUrl(route.upstreamUrl)}',
-    );
-    // logcat-visible (the AppLog file is not reachable on a release install) so a
+    ); // logcat-visible (the AppLog file is not reachable on a release install) so a
     // slow seek can be attributed to the transport or to the player.
-    debugPrint(
-      'MEDIO-TRANSPORT relay #$relayId route=${route.cacheKey} range='
-      '${req.headers.value(HttpHeaders.rangeHeader) ?? '-'}',
+    //
+    // `active` counts relays currently open on the same *file* (route ids differ
+    // across re-bootstraps): >1 means two readers of one file are competing for
+    // the CDN budget, which is what makes a 4K remux starve while the transport
+    // still reports healthy aggregate throughput. `ua` names the consumer
+    // (ExoPlayer / mpv / Dart HttpClient), and `rid` the transport route, so a
+    // phantom reader can be attributed without the app log.
+    final rangeHeader = req.headers.value(HttpHeaders.rangeHeader);
+    final userAgent = req.headers.value(HttpHeaders.userAgentHeader) ?? '-';
+    final routeRelays = _activeRelays.putIfAbsent(route.cacheKey, () => {});
+    final relayState = _RelayState(
+      id: relayId,
+      startBytes: clientReq.start,
     );
+    routeRelays[relayId] = relayState;
+    final activeCount = routeRelays.length;
+    debugPrint(
+      'MEDIO-TRANSPORT relay #$relayId rid=${route.id} route=${route.cacheKey} '
+      'active=$activeCount client=$clientPort range=${rangeHeader ?? '-'} '
+      'ua=$userAgent',
+    );
+    if (activeCount > 1) {
+      final peers = routeRelays.entries
+          .where((e) => e.key != relayId)
+          .map((e) => '#${e.key}:${e.value.rangeLabel}')
+          .join(' ');
+      debugPrint(
+        'MEDIO-TRANSPORT relay #$relayId CONCURRENT route=${route.cacheKey} '
+        'active=$activeCount peers=$peers',
+      );
+    }
+    _ensureStaleSweeper();
     const throughputLogEveryBytes = 32 * 1024 * 1024;
     const slowBlockFetchThresholdMs = 1500;
 
@@ -215,6 +298,25 @@ class NetdiskTransport {
       while (true) {
         if (total != null && pos >= total) break;
         if (requestedEnd != null && pos > requestedEnd) break;
+
+        // A reader the player has moved away from still gets served, but slowly:
+        // it no longer competes for the per-connection CDN budget (see
+        // [_sweepStaleReaders]). Staying stale for too long means the player
+        // closed that load for good, so the relay is dropped.
+        if (relayState.stale) {
+          final staleFor = DateTime.now().difference(
+            relayState.staleSince ?? DateTime.now(),
+          );
+          if (staleFor >= staleDropAfter) {
+            debugPrint(
+              'MEDIO-TRANSPORT relay #$relayId dropped after '
+              '${staleFor.inSeconds}s stale route=${route.cacheKey}',
+            );
+            break;
+          }
+          await Future<void>.delayed(staleBlockDelay);
+          if (relayState.stale) continue;
+        }
 
         final blockIndex = pos ~/ chunkSize;
         final blockStart = blockStartOffset(blockIndex, chunkSize);
@@ -238,7 +340,12 @@ class NetdiskTransport {
 
         if (block == null || total == null) {
           final fetchStartedAt = DateTime.now();
-          final outcome = await _fetchShared(route, blockIndex, total);
+          final outcome = await _fetchShared(
+            route,
+            blockIndex,
+            total,
+            relayId: relayId,
+          );
           final fetchMs =
               DateTime.now().difference(fetchStartedAt).inMilliseconds;
           final relay = outcome.wholeFile;
@@ -290,16 +397,22 @@ class NetdiskTransport {
         relayBytes += slice.length;
         blocksServed++;
         if (fromCache) cacheHits++;
+        relayState.servedPos = pos;
 
         // Fetch the next blocks while the player consumes this one, so the
-        // serial 4 MB round-trip never sits on the critical path.
-        _schedulePrefetch(route, blockIndex, total, requestedEnd);
+        // serial 4 MB round-trip never sits on the critical path. A stale
+        // reader must not pull ahead: its prefetches would fight the anchor
+        // for the per-file concurrency budget.
+        if (!relayState.stale) {
+          _schedulePrefetch(route, blockIndex, total, requestedEnd);
+        }
 
         if (relayBytes - lastThroughputLogBytes >= throughputLogEveryBytes) {
           lastThroughputLogBytes = relayBytes;
           final seconds =
               DateTime.now().difference(relayStartedAt).inMilliseconds / 1000.0;
-          final mbps = seconds > 0 ? relayBytes * 8 / (seconds * 1000000.0) : 0.0;
+          final mbps =
+              seconds > 0 ? relayBytes * 8 / (seconds * 1000000.0) : 0.0;
           AppLog.instance.i(
             'NetdiskTransport',
             'relay ${(relayBytes / 1048576).toStringAsFixed(0)}MB in '
@@ -314,10 +427,24 @@ class NetdiskTransport {
     } catch (e) {
       AppLog.instance.d('NetdiskTransport', 'stream ended: $e');
     } finally {
+      routeRelays.remove(relayId);
+      if (routeRelays.isEmpty &&
+          identical(_activeRelays[route.cacheKey], routeRelays)) {
+        _activeRelays.remove(route.cacheKey);
+      }
       final seconds =
           DateTime.now().difference(relayStartedAt).inMilliseconds / 1000.0;
+      final mbps = seconds > 0 ? relayBytes * 8 / (seconds * 1000000.0) : 0.0;
+      // One line per relay on logcat: pairing it with the `relay #N start` line
+      // gives the concurrent-reader count and each reader's own throughput.
+      debugPrint(
+        'MEDIO-TRANSPORT relay #$relayId done route=${route.cacheKey} '
+        'bytes=$relayBytes seconds=${seconds.toStringAsFixed(1)} '
+        'mbps=${mbps.toStringAsFixed(1)} blocks=$blocksServed '
+        'cacheHits=$cacheHits client=$clientPort '
+        'active=${routeRelays.length}',
+      );
       if (seconds >= 5 && !isHead) {
-        final mbps = relayBytes * 8 / (seconds * 1000000.0);
         AppLog.instance.i(
           'NetdiskTransport',
           'relay #$relayId closed: ${(relayBytes / 1048576).toStringAsFixed(1)}MB in '
@@ -328,6 +455,64 @@ class NetdiskTransport {
       try {
         await resp.close();
       } catch (_) {}
+    }
+  }
+
+  /// Starts the periodic stale-reader sweep (idempotent).
+  void _ensureStaleSweeper() {
+    _staleSweeper ??= Timer.periodic(
+      staleSweepInterval,
+      (_) => _sweepStaleReaders(),
+    );
+  }
+
+  /// Throttles readers of a file that the player has moved away from.
+  ///
+  /// Media3 happily leaves several open-ended streams running on one file while
+  /// it resolves a Matroska seek map (measured: `bytes=0-`, `bytes=7546-` and
+  /// the playback position, all reading at full speed for minutes). Only the
+  /// newest reader is the one the player is positioned on; an older reader that
+  /// is far away has been left behind, and letting it keep reading at line rate
+  /// halves the video's effective supply.
+  void _sweepStaleReaders() {
+    for (final entry in _activeRelays.entries) {
+      final relays = entry.value;
+      if (relays.length < 2) {
+        for (final r in relays.values) {
+          r.stale = false;
+        }
+        continue;
+      }
+      final now = DateTime.now();
+      final newest = relays.values.reduce((a, b) => a.id > b.id ? a : b);
+      final newestAlive = now.difference(newest.startedAt);
+      for (final r in relays.values) {
+        final stale = isStaleReader(
+          id: r.id,
+          positionBytes: r.servedPos,
+          alive: now.difference(r.startedAt),
+          newestId: newest.id,
+          newestPositionBytes: newest.servedPos,
+          newestAlive: newestAlive,
+          minDistanceBytes: staleDistanceBytes,
+          minAlive: staleGrace,
+          wasStale: r.stale,
+        );
+        if (stale == r.stale) continue;
+        r.stale = stale;
+        r.staleSince = stale ? DateTime.now() : null;
+        if (stale) {
+          debugPrint(
+            'MEDIO-TRANSPORT relay #${r.id} stale (pos=${r.servedPos} '
+            'anchor=#${newest.id}@${newest.servedPos} '
+            'route=${entry.key} throttle=${staleBlockDelay.inSeconds}s)',
+          );
+        } else {
+          debugPrint(
+            'MEDIO-TRANSPORT relay #${r.id} active again (pos=${r.servedPos})',
+          );
+        }
+      }
     }
   }
 
@@ -382,46 +567,47 @@ class NetdiskTransport {
   Future<_BlockOutcome> _fetchShared(
     _Route route,
     int blockIndex,
-    int? total,
-  ) {
+    int? total, {
+    int? relayId,
+  }) {
     final key = _blockKey(route.cacheKey, blockIndex);
     final existing = _inflight[key];
     if (existing != null) return existing;
     _inflightByKey[route.cacheKey] = (_inflightByKey[route.cacheKey] ?? 0) + 1;
     final fetchStartedAt = DateTime.now();
-    final future = _fetchBlockWithRecovery(route, blockIndex, total)
-        .then((outcome) async {
-          if (outcome.bytes != null) {
-            // Logcat-visible per-fetch line (the AppLog file is not reachable
-            // on a release install): achieved throughput per block is what
-            // separates a CDN-throttled stall from a player-side one.
-            final fetchMs =
-                DateTime.now().difference(fetchStartedAt).inMilliseconds;
-            debugPrint(
-              'MEDIO-TRANSPORT block #$blockIndex 206 '
-              'bytes=${outcome.bytes!.length} total=${fetchMs}ms '
-              'route=${route.cacheKey}',
-            );
-            // Persist before completing: the serving loop may consume the
-            // bytes straight from this future, and a second play (or another
-            // connection) must find them on disk.
-            await cache?.write(route.cacheKey, blockIndex, outcome.bytes!);
-            if (outcome.total != null) {
-              unawaited(cache?.writeTotal(route.cacheKey, outcome.total!));
-            }
-            if (!_cacheUsable) _remember(key, outcome);
-          }
-          return outcome;
-        })
-        .whenComplete(() {
-          _inflight.remove(key);
-          final n = (_inflightByKey[route.cacheKey] ?? 1) - 1;
-          if (n <= 0) {
-            _inflightByKey.remove(route.cacheKey);
-          } else {
-            _inflightByKey[route.cacheKey] = n;
-          }
-        });
+    final future =
+        _fetchBlockWithRecovery(route, blockIndex, total).then((outcome) async {
+      if (outcome.bytes != null) {
+        // Logcat-visible per-fetch line (the AppLog file is not reachable
+        // on a release install): achieved throughput per block is what
+        // separates a CDN-throttled stall from a player-side one.
+        final fetchMs =
+            DateTime.now().difference(fetchStartedAt).inMilliseconds;
+        debugPrint(
+          'MEDIO-TRANSPORT block #$blockIndex 206 '
+          'bytes=${outcome.bytes!.length} total=${fetchMs}ms '
+          'route=${route.cacheKey} rid=${route.id} '
+          'via=${relayId == null ? 'prefetch' : 'serve#$relayId'}',
+        );
+        // Persist before completing: the serving loop may consume the
+        // bytes straight from this future, and a second play (or another
+        // connection) must find them on disk.
+        await cache?.write(route.cacheKey, blockIndex, outcome.bytes!);
+        if (outcome.total != null) {
+          unawaited(cache?.writeTotal(route.cacheKey, outcome.total!));
+        }
+        if (!_cacheUsable) _remember(key, outcome);
+      }
+      return outcome;
+    }).whenComplete(() {
+      _inflight.remove(key);
+      final n = (_inflightByKey[route.cacheKey] ?? 1) - 1;
+      if (n <= 0) {
+        _inflightByKey.remove(route.cacheKey);
+      } else {
+        _inflightByKey[route.cacheKey] = n;
+      }
+    });
     _inflight[key] = future;
     return future;
   }
@@ -469,7 +655,7 @@ class NetdiskTransport {
         // sibling tracks are holding the whole per-file concurrency budget.
         debugPrint(
           'MEDIO-TRANSPORT prefetch cap reached: inFlight=$inFlight '
-          'servedBlock=$servedIndex',
+          'route=${route.cacheKey} servedBlock=$servedIndex',
         );
         break;
       }
@@ -611,7 +797,8 @@ class NetdiskTransport {
       request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
       final fetchStartedAt = DateTime.now();
       final upResp = await request.close();
-      final headersMs = DateTime.now().difference(fetchStartedAt).inMilliseconds;
+      final headersMs =
+          DateTime.now().difference(fetchStartedAt).inMilliseconds;
       if (upResp.statusCode == HttpStatus.partialContent) {
         final bytes = await _collectBytes(upResp);
         return _UpstreamFetch.ranged(
@@ -660,6 +847,7 @@ class NetdiskTransport {
 
 class _Route {
   _Route({
+    required this.id,
     required this.upstreamUrl,
     required this.headers,
     required this.cacheKey,
@@ -667,6 +855,7 @@ class _Route {
     this.refresh,
   });
 
+  final int id;
   String upstreamUrl;
   Map<String, String> headers;
   final String cacheKey;
@@ -696,6 +885,30 @@ class _Route {
     _client?.close(force: true);
     _client = null;
   }
+}
+
+/// One live localhost connection reading a file, used to spot the readers the
+/// player has moved away from (see [isStaleReader]).
+class _RelayState {
+  _RelayState({required this.id, required this.startBytes});
+
+  final int id;
+
+  /// Byte offset the client asked for when it opened the relay.
+  final int startBytes;
+
+  final DateTime startedAt = DateTime.now();
+
+  /// Byte offset served so far; [startBytes] until the first block flushes.
+  late int servedPos = startBytes;
+
+  /// Set once the relay is throttled as an abandoned reader.
+  bool stale = false;
+
+  /// When [stale] was last set; drives the drop-after-stale-long-enough rule.
+  DateTime? staleSince;
+
+  String get rangeLabel => 'bytes=$startBytes-';
 }
 
 class _WholeFileRelay {
