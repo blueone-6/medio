@@ -49,23 +49,75 @@
 测试：`test/netdisk_stale_reader_test.dart`（5 例，含纯策略与端到端 stale/drop），
 连同 `netdisk_transport_test.dart`、`netdisk_block_cache_test.dart` 共 26 例通过。
 
+## release + R8 白屏（已定位并修复）
+
+症状：`isMinifyEnabled = true` 的 release 包首帧永不出、纯白，进程不崩；debug 与关掉
+R8 的 release 正常。
+
+**定位方法**：release 里 Dart 侧没有任何可读日志（`AppLog` 只在 `kDebugMode` 打
+logcat，应用私有日志目录在非 debuggable 包上 `run-as` 不可用）。临时在 `main()`
+每个 await 后打 breadcrumb，并通过一个一次性 MethodChannel（`medio/boot_trace`）
+落到原生 `Log.i`，第一次构建就打出：
+
+```
+MEDIO-BOOT device type detected
+MEDIO-BOOT BOOT FAILED: PlatformException(... java.lang.NoSuchMethodError:
+  no non-static method "Lio/flutter/plugins/sharedpreferences/
+  SharedPreferencesApiRegistrar;.getAll(String, List, Continuation)Object")
+```
+
+即 `LocalStorage.open()` → `SharedPreferences.getInstance()` 抛异常，被
+`CrashReporter.runZonedLogged` 的 zone 捕获（只写崩溃日志文件），`runApp()`
+永不执行 → 白屏且无崩溃。
+
+**根因**（两层，都来自实际参与构建的 `shared_preferences_android` **2.5.0** 改用
+jnigen 直连 JNI，而不是 MethodChannel）：
+
+1. **描述符被改写**：`@Keep` 保住了方法名，但描述符里的
+   `kotlin.coroutines.Continuation` 被 R8 改名（mapping 里可见
+   `(Ljava/lang/String;Ljava/util/List;LX1/d;)Ljava/lang/Object;` 以及
+   `com.android.tools.r8.residualsignature`），而 Dart 侧是按**原描述符**
+   `GetMethodID`；签名对不上 → `NoSuchMethodError`。
+2. **按名字加载的类被剪掉**：`package:jni` 的 `lib/src/kotlin.dart` 用
+   `JClass.forName('kotlin/coroutines/intrinsics/CoroutineSingletons')`、
+   `IntrinsicsKt`、`Unit`、`Result`/`Result$Failure` 按名字取 Kotlin 运行时类，
+   这些类没有静态引用，R8 直接删除 → `ClassNotFoundException`。
+   上游 `jni` 的 `android/consumer-rules.pro` 只 keep 了
+   `com.github.dart_lang.jni.**`，而且 **Flutter 插件是 Gradle 子工程、consumer
+   rules 根本不会被应用**。
+
+**修复**：`android/app/proguard-rules.pro` 增加两组规则
+- `-keep, includedescriptorclasses` 两个 jnigen 插件包
+  （`io.flutter.plugins.sharedpreferences.**`、`io.flutter.plugins.pathprovider.**`），
+  保证描述符里的类型不被改名；
+- `-keep` `com.github.dart_lang.jni.**` 与 jni 按名字加载的 Kotlin 类
+  （`Continuation`、`CoroutineSingletons`、`IntrinsicsKt`、`Unit`、`Result`、
+  `Result$Failure`）。
+
+**验证**：release + R8 包真机启动走到 `first frame rendered`，首页正常、继续观看
+历史仍在；logcat 无 `NoSuchMethodError` / `ClassNotFoundException` / `E/flutter`。
+复现/回归检查流程：`flutter build apk --release` → `adb install -r` →
+`adb shell am start -n com.medio.community/com.example.media_client.MainActivity` →
+截图确认非白屏（白屏时截图只有 ~45KB，正常首页 ~1.9MB）。
+
+**另一个隐患**：本机 `flutter pub get` 会重解析 144 个依赖（提交的 `pubspec.lock`
+与当前 SDK / 镜像不符），实际构建用的是 `shared_preferences_android` 2.5.0 而不是
+lock 里钉的 2.4.23——白屏就是这样被带进来的。上面的 keep 规则对两个版本都成立，
+但 lock 漂移需要单独收敛，否则依赖会继续漂。
+
 ## 尚未处理 / 已知问题
 
-1. **release + R8 白屏（本次排查中发现，独立问题）**：`isMinifyEnabled = true` 时
-   release 包首帧不出、全白；把 `isMinifyEnabled`/`isShrinkResources` 关掉即正常
-   （debug 包也正常）。疑似 R8 剪裁掉启动路径所需的东西，未定位到具体类；
-   当前仓库保持原有 minify 配置，需要单独排查（可用 `-keep class io.flutter.**` 二分）。
-   注意本机 `flutter pub get` 会重解析 144 个依赖（提交的 `pubspec.lock` 与当前 SDK
-   约束不符），排查 R8 时先固定依赖集。
-2. **多机签名不一致**：手机上的 1.2.0 包用了一台本机没有的 keystore 签名，
+1. **多机签名不一致**：手机上的 1.2.0 包用了一台本机没有的 keystore 签名，
    覆盖安装会报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`；本次是卸载重装。
    建议按 `android/key.properties` 注释统一到一个共享 keystore。
-3. **stale 判定的余量**：`staleGrace=6s` 期间、以及每次锚点切换后的判定窗口内，
+2. **stale 判定的余量**：`staleGrace=6s` 期间、以及每次锚点切换后的判定窗口内，
    被放弃的 reader 仍会全速拉一会儿（实测峰值 ~100MB）。若要更激进可缩短
    `staleDropAfter`，或在 `register()` 被同一 cacheKey 重复调用时直接判旧 route 过期。
-4. **transport 无法感知客户端半关连接**是本次的通用隐患：只要对端把响应读完丢弃，
+3. **transport 无法感知客户端半关连接**是本次的通用隐患：只要对端把响应读完丢弃，
    我们就永远不知道它已经走了。除 stale 判定外，可考虑给 open-ended 响应加
    「长时间无消费迹象」检测（例如统计 `flush()` 的阻塞时间分布）。
+4. **pubspec.lock 漂移**：见上一节末尾；`flutter pub get` 会改锁文件，构建后需
+   `git checkout -- pubspec.lock`，长期方案是让锁与当前 Flutter/镜像一致。
 
 ## 测量陷阱（勿重蹈）
 
