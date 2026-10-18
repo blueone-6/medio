@@ -604,6 +604,26 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
     }
   }
 
+  /// Re-reads the native track catalog for the track sheets.
+  ///
+  /// The catalog used for playback is read early in preparation, before media3
+  /// has marked a track as selected, so the sheets refresh it first: that is
+  /// what lets 音轨 show the player's own default as the selected row.
+  Future<void> _refreshTrackCatalog() async {
+    try {
+      final catalog = ExoTrackCatalog.fromMap(await _player.getTracksRaw());
+      if (!mounted) return;
+      setState(() => _tracks = catalog);
+      debugPrint(
+        'MEDIO-TRACKS audio=${catalog.audio.length} '
+        'selected=${catalog.audio.where((t) => t.isSelected).map((t) => t.id).toList()} '
+        'unsupported=${catalog.unsupportedAudio.length}',
+      );
+    } catch (e) {
+      AppLog.instance.w('ExoPlayer', 'refresh track catalog failed: $e');
+    }
+  }
+
   /// Fallback driver for [_onSourceReady], called from the playback state
   /// stream: playback state is authoritative, so once the source is actually
   /// running the selections are applied even if the `ready` event was missed or
@@ -1566,6 +1586,7 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
                             onSubtitlePicked: _onSubtitleMenuPicked,
                             currentAudio: _currentAudio,
                             onAudioPicked: _onAudioPicked,
+                            onRefreshTracks: _refreshTrackCatalog,
                             speed: _speed,
                             onRatePicked: _onRatePicked,
                             videoFitMode: _videoFitMode,

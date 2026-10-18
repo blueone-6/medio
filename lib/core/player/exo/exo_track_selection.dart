@@ -24,6 +24,17 @@ class ExoPlayerTrack {
   }
 }
 
+/// Whether [track] should render as the selected row in a track sheet.
+///
+/// [current] is the track the user picked this session; when there is none, the
+/// player's own selection is used — the native catalog marks the auto-selected
+/// default (`isSelected`), which the 音轨 sheet previously ignored, so no row
+/// looked selected until the user picked one manually.
+bool isTrackSelected(ExoPlayerTrack track, ExoPlayerTrack? current) {
+  if (current != null) return current.id == track.id;
+  return track.isSelected;
+}
+
 /// Audio + text tracks of the currently prepared media item.
 class ExoTrackCatalog {
   const ExoTrackCatalog({

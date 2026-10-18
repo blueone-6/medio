@@ -352,6 +352,21 @@ void main() {
     });
   });
 
+  group('isTrackSelected', () {
+    const auto = ExoPlayerTrack(id: 'a:1:0', label: 'EAC3 5.1', isSelected: true);
+    const other = ExoPlayerTrack(id: 'a:1:1', label: 'AAC 2.0');
+
+    test('falls back to the player selection when the user has not picked', () {
+      expect(isTrackSelected(auto, null), isTrue);
+      expect(isTrackSelected(other, null), isFalse);
+    });
+
+    test('a manual pick wins over the player default', () {
+      expect(isTrackSelected(other, other), isTrue);
+      expect(isTrackSelected(auto, other), isFalse);
+    });
+  });
+
   group('muxedTrackPreferenceKey', () {
     test('stable across native id changes', () {
       final a = _track('t:0:0', 'Chinese', language: 'chi');

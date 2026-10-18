@@ -31,6 +31,7 @@ class ExoPlayerControls extends StatefulWidget {
     required this.onSubtitlePicked,
     required this.currentAudio,
     required this.onAudioPicked,
+    this.onRefreshTracks,
     required this.speed,
     required this.onRatePicked,
     required this.videoFitMode,
@@ -72,6 +73,13 @@ class ExoPlayerControls extends StatefulWidget {
   final ValueChanged<ExoSubtitleTarget> onSubtitlePicked;
   final ExoPlayerTrack? currentAudio;
   final ValueChanged<ExoPlayerTrack?> onAudioPicked;
+
+  /// Re-reads the native track catalog before the 音轨/字幕 sheets open.
+  ///
+  /// The cached catalog is read early in preparation (before media3 has marked
+  /// a track selected), so without this the sheet cannot show which track the
+  /// player actually picked, and it goes stale after a mid-session track change.
+  final Future<void> Function()? onRefreshTracks;
 
   final double speed;
   final ValueChanged<double> onRatePicked;
@@ -315,6 +323,7 @@ class _ExoPlayerControlsState extends State<ExoPlayerControls> {
 
   Future<void> _showSubtitlePicker() async {
     _notify();
+    await widget.onRefreshTracks?.call();
     await _showPlayerMenuSheet(
       title: '字幕',
       showCount: true,
@@ -327,35 +336,34 @@ class _ExoPlayerControlsState extends State<ExoPlayerControls> {
     VoidCallback refresh,
   ) {
     final current = widget.currentAudio;
-    if (widget.audioTracks.isEmpty &&
-        widget.unsupportedAudioTracks.isNotEmpty) {
-      // The container has audio, the device just cannot decode it — say so
-      // rather than presenting an empty 音轨 list and silent playback.
-      final codec = widget.unsupportedAudioTracks.first.label.toUpperCase();
-      return [
-        PlayerMenuRow(
-          label: '$codec 音轨 · 此设备无法解码',
-          value: '无声播放',
-          onTap: null,
-        ),
-      ];
-    }
+    final anyPlayable = widget.audioTracks.isNotEmpty;
     return [
       for (final t in widget.audioTracks)
         PlayerMenuRow(
           label: t.label,
           value: t.language,
-          selected: current?.id == t.id,
+          selected: isTrackSelected(t, current),
           onTap: () {
             popSheet();
             widget.onAudioPicked(t);
           },
+        ),
+      // The container can carry tracks this device cannot decode (no Dolby
+      // decoder in the platform codec list). List every one of them, even when
+      // other tracks are playable, so a mixed file does not hide why one of its
+      // tracks produces no sound.
+      for (final t in widget.unsupportedAudioTracks)
+        PlayerMenuRow(
+          label: '${t.label.toUpperCase()} 音轨 · 此设备无法解码',
+          value: anyPlayable ? '不可选' : '无声播放',
+          onTap: null,
         ),
     ];
   }
 
   Future<void> _showAudioPicker() async {
     _notify();
+    await widget.onRefreshTracks?.call();
     await _showPlayerMenuSheet(
       title: '音轨',
       showCount: true,

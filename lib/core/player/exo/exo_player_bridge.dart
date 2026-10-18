@@ -204,13 +204,22 @@ class ExoPlayerBridge {
     });
   }
 
-  Future<void> play() => _method.invokeMethod<void>('play');
+  Future<void> play() =>
+      _method.invokeMethod<void>('play', {'sessionId': sessionId});
 
-  Future<void> pause() => _method.invokeMethod<void>('pause');
+  Future<void> pause() =>
+      _method.invokeMethod<void>('pause', {'sessionId': sessionId});
 
+  /// Per-session calls carry the session id so a call still in flight from a
+  /// screen that is tearing down cannot act on the episode that replaces it
+  /// (a stale seek jumped the new episode to the old position; a stale subtitle
+  /// pick re-targeted the new episode's tracks).
   Future<void> seekTo(Duration position) => _method.invokeMethod<void>(
         'seekTo',
-        {'positionMs': position.inMilliseconds},
+        {
+          'positionMs': position.inMilliseconds,
+          'sessionId': sessionId,
+        },
       );
 
   Future<void> setPlaybackSpeed(double speed) =>
@@ -222,6 +231,7 @@ class ExoPlayerBridge {
     _pump.state.add(_pump.latest);
     await _method.invokeMethod<void>('setVolume', {
       'volume': (volume.clamp(0.0, 100.0) / 100.0),
+      'sessionId': sessionId,
     });
   }
 
@@ -230,7 +240,10 @@ class ExoPlayerBridge {
 
   /// Subtitle delay for muxed (native-rendered) text tracks, ms ≥ 0.
   Future<void> setSubtitleDelayMs(int delayMs) =>
-      _method.invokeMethod<void>('setSubtitleDelayMs', {'delayMs': delayMs});
+      _method.invokeMethod<void>('setSubtitleDelayMs', {
+        'delayMs': delayMs,
+        'sessionId': sessionId,
+      });
 
   /// Scales native (muxed) subtitle text; 1.0 = the authored default (42).
   Future<void> setSubtitleFontScale(double scale) =>
@@ -247,10 +260,16 @@ class ExoPlayerBridge {
       _method.invokeMapMethod<String, dynamic>('getTracks');
 
   Future<void> selectAudioTrack(String? id) =>
-      _method.invokeMethod<void>('selectAudioTrack', {'id': id});
+      _method.invokeMethod<void>('selectAudioTrack', {
+        'id': id,
+        'sessionId': sessionId,
+      });
 
   Future<void> selectTextTrack(String? id) =>
-      _method.invokeMethod<void>('selectTextTrack', {'id': id});
+      _method.invokeMethod<void>('selectTextTrack', {
+        'id': id,
+        'sessionId': sessionId,
+      });
 
   Future<void> stop() =>
       _method.invokeMethod<void>('stop', {'sessionId': sessionId});

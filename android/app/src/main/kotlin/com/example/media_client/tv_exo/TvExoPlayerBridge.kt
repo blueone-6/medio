@@ -248,14 +248,42 @@ class TvExoPlayerBridge(
         }
     }
 
-    /** Re-renders delayed muxed cues while the delay is active. */
+    /**
+     * Re-renders delayed muxed cues while a delay is active.
+     *
+     * Only runs while [subtitleDelayMs] is non-zero ([syncDelayTicker]): the
+     * phone always renders muxed cues itself, so an unconditional 100 ms tick
+     * woke the CPU ~10×/s for the whole session even with no delay set.
+     */
     private val delayTicker = object : Runnable {
         override fun run() {
+            delayTickerScheduled = false
             val p = player
-            if (p != null && customSubtitleRendering && subtitleDelayMs != 0L) {
-                renderDelayedCues(p)
-            }
-            mainHandler.postDelayed(this, DELAY_TICK_MS)
+            if (p == null || !customSubtitleRendering || subtitleDelayMs == 0L) return
+            renderDelayedCues(p)
+            scheduleDelayTicker()
+        }
+    }
+
+    private var delayTickerScheduled = false
+
+    private fun scheduleDelayTicker() {
+        if (delayTickerScheduled) return
+        delayTickerScheduled = true
+        mainHandler.postDelayed(delayTicker, DELAY_TICK_MS)
+    }
+
+    private fun stopDelayTicker() {
+        delayTickerScheduled = false
+        mainHandler.removeCallbacks(delayTicker)
+    }
+
+    /** Starts the cue re-render ticker only while a delay is actually set. */
+    private fun syncDelayTicker() {
+        if (customSubtitleRendering && subtitleDelayMs != 0L) {
+            scheduleDelayTicker()
+        } else {
+            stopDelayTicker()
         }
     }
 
@@ -611,21 +639,23 @@ class TvExoPlayerBridge(
         }
         p.prepare()
         startPositionUpdates()
-        if (customSubtitleRendering) {
-            mainHandler.removeCallbacks(delayTicker)
-            mainHandler.postDelayed(delayTicker, DELAY_TICK_MS)
-        }
+        syncDelayTicker()
     }
 
-    fun play() {
+    fun play(sessionId: Int = 0) {
+        if (!ownsSession(sessionId)) return stale("play", sessionId)
         player?.play() ?: return
     }
 
-    fun pause() {
+    fun pause(sessionId: Int = 0) {
+        if (!ownsSession(sessionId)) return stale("pause", sessionId)
         player?.pause()
     }
 
-    fun seekTo(positionMs: Long) {
+    fun seekTo(positionMs: Long, sessionId: Int = 0) {
+        // A stale seek from a screen that is tearing down would otherwise jump
+        // the *next* episode to the old position.
+        if (!ownsSession(sessionId)) return stale("seekTo", sessionId)
         Log.i(TAG, "seekTo $positionMs (from ${player?.currentPosition ?: -1})")
         player?.seekTo(positionMs.coerceAtLeast(0))
     }
@@ -654,7 +684,8 @@ class TvExoPlayerBridge(
 
     fun getResizeMode(): Int = resizeMode
 
-    fun setVolume(volume: Double) {
+    fun setVolume(volume: Double, sessionId: Int = 0) {
+        if (!ownsSession(sessionId)) return stale("setVolume", sessionId)
         desiredVolume = volume.coerceIn(0.0, 1.0)
         player?.volume = if (muted) 0f else desiredVolume.toFloat()
     }
@@ -672,12 +703,14 @@ class TvExoPlayerBridge(
      * exposes only the currently-active cues, so future cues cannot be shown
      * early; external sidecar subs are delayed in both directions by the
      * Flutter overlay instead). */
-    fun setSubtitleDelayMs(delayMs: Long) {
+    fun setSubtitleDelayMs(delayMs: Long, sessionId: Int = 0) {
+        if (!ownsSession(sessionId)) return stale("setSubtitleDelayMs", sessionId)
         val clamped = delayMs.coerceIn(0L, 30_000L)
         if (clamped != subtitleDelayMs) {
             subtitleDelayMs = clamped
             player?.let { renderDelayedCues(it) }
         }
+        syncDelayTicker()
     }
 
     /**
@@ -799,7 +832,8 @@ class TvExoPlayerBridge(
         )
     }
 
-    fun selectAudioTrack(id: String?) {
+    fun selectAudioTrack(id: String?, sessionId: Int = 0) {
+        if (!ownsSession(sessionId)) return stale("selectAudioTrack", sessionId)
         val p = player ?: return
         if (id == null) {
             trackSelector.parameters = trackSelector.buildUponParameters()
@@ -813,7 +847,9 @@ class TvExoPlayerBridge(
             .build()
     }
 
-    fun selectTextTrack(id: String?) {
+    fun selectTextTrack(id: String?, sessionId: Int = 0) {
+        // A stale pick from the previous episode must not re-target this one.
+        if (!ownsSession(sessionId)) return stale("selectTextTrack", sessionId)
         val p = player ?: run {
             Log.i(TAG, "selectTextTrack($id) ignored: no player")
             return
@@ -856,6 +892,11 @@ class TvExoPlayerBridge(
     private fun ownsSession(sessionId: Int): Boolean =
         sessionId == 0 || activeSessionId == 0 || sessionId == activeSessionId
 
+    /** Logs a call dropped because its screen no longer owns the bridge. */
+    private fun stale(method: String, sessionId: Int) {
+        Log.i(TAG, "ignoring stale $method (session=$sessionId active=$activeSessionId)")
+    }
+
     fun stop(sessionId: Int = 0) {
         if (!ownsSession(sessionId)) {
             Log.i(TAG, "ignoring stale stop (session=$sessionId active=$activeSessionId)")
@@ -896,7 +937,7 @@ class TvExoPlayerBridge(
     }
 
     private fun detachPhoneExtras() {
-        mainHandler.removeCallbacks(delayTicker)
+        stopDelayTicker()
         val view = delaySubtitleView
         val parentView = playerView
         if (view != null && parentView != null) {

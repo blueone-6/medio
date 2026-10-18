@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- 音轨 sheet lists **every** track the device cannot decode, and no longer hides
+  them when another track is playable: a file carrying both AAC and EAC3 showed
+  only the playable one, which left the silent track unexplained.
+- Per-session native calls (`seekTo`, `play`/`pause`, `setVolume`,
+  `selectAudioTrack`/`selectTextTrack`, `setSubtitleDelayMs`) now carry the
+  screen's session id, so a call still in flight from a screen that is tearing
+  down can no longer act on the episode that replaced it — a stale seek used to
+  jump the new episode to the old position, and a stale subtitle pick re-targeted
+  the new episode's tracks.
+- 音轨 sheet highlights the player's auto-selected track. It only marked a manual
+  pick, so the default track looked unselected (`isSelected` from the native
+  catalog was parsed but unused); the sheet now also re-reads the catalog when it
+  opens, because the cached one is captured early in preparation, before media3
+  has marked anything selected (verified on device: amber check on the playing
+  track, `MEDIO-TRACKS … selected=[a:1:0]`).
+
+### Changed
+
+- The muxed-cue delay ticker only runs while a subtitle delay is actually set.
+  The phone always renders muxed cues itself, so the ticker posted itself every
+  100 ms for the entire session even with no delay.
+
 ## [1.2.0] - 2026-10-18
 
 ### Added

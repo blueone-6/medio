@@ -104,16 +104,16 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
                 result.success(null)
             }
             "play" -> {
-                b.play()
+                b.play(call.argument<Number>("sessionId")?.toInt() ?: 0)
                 result.success(null)
             }
             "pause" -> {
-                b.pause()
+                b.pause(call.argument<Number>("sessionId")?.toInt() ?: 0)
                 result.success(null)
             }
             "seekTo" -> {
                 val ms = call.argument<Number>("positionMs")?.toLong() ?: 0L
-                b.seekTo(ms)
+                b.seekTo(ms, call.argument<Number>("sessionId")?.toInt() ?: 0)
                 result.success(null)
             }
             "setPlaybackSpeed" -> {
@@ -123,7 +123,7 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
             }
             "setVolume" -> {
                 val volume = call.argument<Double>("volume") ?: 1.0
-                b.setVolume(volume)
+                b.setVolume(volume, call.argument<Number>("sessionId")?.toInt() ?: 0)
                 result.success(null)
             }
             "getVolume" -> result.success(b.getVolume())
@@ -135,7 +135,10 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
             "isMuted" -> result.success(b.isMuted())
             "setSubtitleDelayMs" -> {
                 val delayMs = call.argument<Number>("delayMs")?.toLong() ?: 0L
-                b.setSubtitleDelayMs(delayMs)
+                b.setSubtitleDelayMs(
+                    delayMs,
+                    call.argument<Number>("sessionId")?.toInt() ?: 0,
+                )
                 result.success(null)
             }
             "setSubtitleFontScale" -> {
@@ -151,11 +154,17 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
             "getResizeMode" -> result.success(b.getResizeMode())
             "getTracks" -> result.success(b.getTracks())
             "selectAudioTrack" -> {
-                b.selectAudioTrack(call.argument<String>("id"))
+                b.selectAudioTrack(
+                    call.argument<String>("id"),
+                    call.argument<Number>("sessionId")?.toInt() ?: 0,
+                )
                 result.success(null)
             }
             "selectTextTrack" -> {
-                b.selectTextTrack(call.argument<String>("id"))
+                b.selectTextTrack(
+                    call.argument<String>("id"),
+                    call.argument<Number>("sessionId")?.toInt() ?: 0,
+                )
                 result.success(null)
             }
             "stop" -> {
