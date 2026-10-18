@@ -28,6 +28,7 @@ import '../core/player/episode_navigation.dart';
 import '../core/player/playback_resume.dart';
 import '../core/player/reopen_backoff.dart';
 import '../core/player/player_codec_error.dart';
+import '../core/player/player_av_sync.dart';
 import '../core/player/player_network_error.dart';
 import '../core/player/player_http_headers.dart';
 import '../core/player/android_video_output_ready.dart';
@@ -1987,6 +1988,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     }
   }
 
+  /// 音画同步（mpv `audio-delay`）：**按片源记忆**（见 player_av_sync.dart）。
+  ///
+  /// 打开新片源时应用这个片源自己存的值（未记录过的片源为 0），所以只有真正需要
+  /// 补偿的片源会被移动，其它片源一律不动。
+  Future<void> _applyAudioDelay() async {
+    final ms = ref.read(settingsServiceProvider).audioDelayMsFor(widget.itemId);
+    try {
+      await _player.setMpvProperty('audio-delay', mpvAudioDelaySeconds(ms));
+      if (ms != 0) {
+        AppLog.instance.d('Player', 'audio-delay applied: ${ms}ms');
+      }
+    } catch (e) {
+      AppLog.instance.w('Player', 'audio-delay failed: $e');
+    }
+  }
+
   Future<void> _applySubtitlePreference(EmbyPlaybackInfo pb) async {
     final emby = _emby;
     if (emby == null) return;
@@ -2173,6 +2190,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _userPaused = false;
     await _player.play();
     await _player.setRate(speed);
+    await _applyAudioDelay();
   }
 
   /// Persists volume changes (debounced) once the restored level has been

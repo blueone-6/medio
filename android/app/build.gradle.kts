@@ -61,7 +61,13 @@ flutter {
 }
 
 dependencies {
-    val media3 = "1.4.1"
+    // 1.11.1 rather than 1.4.1: the audio clock fixes needed for playback after
+    // a network stall (AudioTrack underrun detection via getUnderrunCount(),
+    // timestamp-drift smoothing, the 100 ms underrun grace period and 500 ms PCM
+    // buffer) all landed in 1.8.0+; see
+    // docs/superpowers/specs/2026-10-18-android-av-desync-research.md. The
+    // vendored FFmpeg bindings below are synced to the same tag.
+    val media3 = "1.11.1"
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-exoplayer-hls:$media3")
     implementation("androidx.media3:media3-ui:$media3")

@@ -146,6 +146,15 @@ class TvExoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Activi
                 b.setSubtitleFontScale(scale)
                 result.success(null)
             }
+            "setAudioDelayMs" -> {
+                val delayMs = call.argument<Number>("delayMs")?.toLong() ?: 0L
+                b.setAudioDelayMs(
+                    delayMs,
+                    call.argument<Number>("sessionId")?.toInt() ?: 0,
+                )
+                result.success(null)
+            }
+            "getAudioDelayMs" -> result.success(b.getAudioDelayMs())
             "setResizeMode" -> {
                 val mode = call.argument<Number>("mode")?.toInt() ?: 0
                 b.setResizeMode(mode)

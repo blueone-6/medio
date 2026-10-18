@@ -1,12 +1,28 @@
-# Android 软解音频网络卡顿后音画不同步 — 调研记录
+# Android 软解音频音画不同步 — 调研与修复记录
 
-> 状态：**仅调研，未改代码**。修复方案待定（见文末「修复方向」），下次处理时从这里接续。
+> 状态：**已修复（2026-10-19）**。
+>
+> **重要更正**：实测（2026-10-19 现场播放 Dolby Vision/TrueHD remux）确认，用户看到的
+> 主症状**与网络卡顿无关**：只要音轨走 FFmpeg 软解，声音就**一直**比画面快
+> **约 300–500 ms**（恒定）。本文的 A/B 两类嫌疑只解释「卡顿后**额外**漂移」，不是这个
+> 恒定偏移的成因。恒定偏移已由**手动「音画同步」补偿**解决（见文末「恒定偏移」一节）。
 
 ## 现象
 
-Android 客户端（手机 ExoPlayer 路径）播放 Dolby/DTS remux 时，网络卡顿恢复后音频与
-视频出现肉眼可感的**固定小偏移**（几十~几百 ms），直到下次 seek/flush 才重新对齐。
-该偏移只在网络卡顿后出现，正常播放无偏移。
+Android 客户端（手机 ExoPlayer 路径）播放 Dolby/DTS remux 时，音频与视频存在肉眼可感
+的**恒定偏移**，直到下次 seek/flush 才可能重新对齐（用户现场反馈「一直在，不是卡顿
+才有」）。
+
+- **偏移方向：声音比画面快**（视频落后 / 音频领先），量级约 **300–500 ms**。
+- **只在软解音轨（AC3/EAC3/DTS/TrueHD）片源上出现**；普通 AAC 等硬件解码音轨正常。
+- 现场日志确认这是 FFmpeg 软解路径：`DefaultRenderersFactory: Loaded
+  FfmpegAudioRenderer.`、`libffmpegJNI.so` 加载成功、`AudioTrack` 以 48 kHz
+  立体声 PCM 16-bit 播放（`frame_count=24000` = 500 ms 缓冲）。
+
+恒定偏移量级与 `DefaultAudioSink` 的 PCM 缓冲 / 音频输出延迟同量级，但方向与「音频
+时钟少减了一个 latency」这类推断相反 —— 说明这是**视频管线（解码 → Surface → 显示）
+比音频输出更慢**这类**设备+片源相关、播放器无法自动测量**的物理延迟，只能像
+mpv `--audio-delay` / VLC 的「音轨同步」那样手动校准一次。
 
 ## 同步模型（现状梳理）
 
@@ -98,26 +114,124 @@ Android 客户端（手机 ExoPlayer 路径）播放 Dolby/DTS remux 时，网�
 3. **日志排查**：logcat 搜 `WHOLE-FILE 200 (range ignored)` 与
    `MEDIO-TRANSPORT` 吞吐告警，确认卡顿时是否伴随 B 类事件。
 
-## 修复方向（按性价比，待拍板）
+## 已实施修复（2026-10-19）
 
-1. **升级 media3 1.4.1 → 1.11.x**：直接拿到官方 underrun 检测与时钟平滑修复，
-   是对症 A 的根治。工作量集中在 vendored FFmpeg 绑定按新 tag 重新同步
-   （见 `android/app/src/main/media3ffmpeg/README.md` 的上游对齐说明；
-   `DefaultAudioSink.Builder.setAudioProcessors` 已废弃需换
-   `setAudioProcessorChain`；回归验证 R8 keep 规则
-   `android/app/proguard-rules.pro`）。
-2. **代理补短块校验 + 200-忽略-Range 时按客户端 Range 切片**：堵住 B，与 1 独立、
-   可先行。
-3. **调参缓解**（非根治）：缩短 `bufferForPlaybackAfterRebufferMs` 减少欠载时长；
-   或加「音频延迟」手动补偿设置（目前无该旋钮）。
+### 0. 恒定偏移：「音画同步」手动补偿（对症现场主症状）
+
+现场实测（2026-10-19）：用户手动「声音延后 **1 s**」后对齐；且判断**只有个别片源**
+偏移，正常片源不需要。因此该补偿做成 **仅当前这次播放**（不落盘、换片源自动归零），
+避免把正常片源一起带偏。
+
+- 纯逻辑：`lib/core/player/player_av_sync.dart`（`clampAudioDelayMs` /
+  `formatAudioDelayMs` / `describeAudioDelay` / `mpvAudioDelaySeconds`，
+  量程 ±2 s，步进 0.1 s；单测 `test/player_av_sync_test.dart`）。
+- **ExoPlayer（手机 + TV 共用 bridge）**：`TvExoPlayerBridge` 用自定义
+  `DefaultRenderersFactory` 包一层 `ForwardingAudioSink`，在
+  `getCurrentPositionUs()` 上加 `audioDelayUs`。ExoPlayer 的视频渲染器对的就是这个
+  音频时钟，因此正值 = 时钟前移 = 画面提前 = **声音延后**（mpv `--audio-delay` 语义）。
+  立即生效、无需重建播放器。
+- **作用域：按片源记忆**。值按 `itemId` 存在
+  `StorageKeys.avDelayByItem`（JSON `{itemId: ms}`，最多 50 条，最近使用在后，超出丢
+  最早的；0 表示不补偿并删除条目）。未记录过的片源一律 0，所以正常片源不会被带偏。
+  手机端在 `ExoPlayerScreen.initState` 读该片源的值，`_openSource` 每次把它下发给
+  native（bridge 字段跨 player 重建保留，不主动下发就会漏到下一片源）；换集走
+  `context.replace`，是新屏，天然用各自的记录。
+- **mpv（桌面）**：值直接写 mpv `audio-delay`（chrome 自动隐藏会重建 widget，Dart
+  字段会丢），打开片源时应用该片源存的值；菜单/对话框里的调整同时写回存储。
+- **UI**：手机「音轨」面板底部「音画同步 · 仅本次播放」（声音延后/提前 0.1 s、0.5 s、
+  重置同步）；桌面「更多 → 音画同步」（0.1 s 微调 / 重置 / 精确滑杆）。
+- **1 s 这个量级**更像是**片源自带的音频延迟**（坏 remux / 音轨本就被后置），而不是
+  设备管线延迟。为此 `TvExoPlayerBridge` 的 `onAudioInputFormatChanged` 会打印
+  `mime/rate/ch/encoderDelay/encoderPadding`：若 `encoderDelay` 接近 1 s，说明延迟来自
+  容器声明，可以做成「按片源自动应用」，不必手动调。
+
+### 1. media3 1.4.1 → 1.11.1（对症 A，卡顿后额外漂移）
+
+- `android/app/build.gradle.kts`：`val media3 = "1.11.1"`。
+- vendored FFmpeg 绑定
+  （`android/app/src/main/media3ffmpeg/`）按同一 tag 重新同步（5 个文件；唯一
+  偏离仍是去掉 `MonotonicNonNull` 注解），README 已更新。
+- 拿到的官方修复：`AudioTrack#getUnderrunCount()` 欠载检测、音频 timestamp 漂移
+  平滑、蓝牙恢复后 10 秒 A/V sync、动态调度（1.9.1）、100 ms 欠载防抖 grace +
+  固定 500 ms PCM buffer（1.10/1.11）、`MediaCodecVideoRenderer` 对「预测将迟到」
+  的解码输入直接丢弃（1.11）。
+- 原生 `.so` 无需重建：1.4.1 与 1.11.1 的 `ffmpeg_jni.cc` JNI 方法名/签名一致
+  （已核对 `JNI_OnLoad` 的 `RegisterNatives` 表）。
+- 回归验证：`flutter build apk --release` 通过，R8 mapping 中
+  `FfmpegAudioRenderer` 及其反射构造器、`FfmpegAudioDecoder.growOutputBuffer`
+  仍然保留；`install -r` 覆盖安装后启动无异常。
+
+### 2. 代理字节完整性（对症 B，独立可先行的两个缺口的收口）
+
+- **短块校验**：206 响应以 **上游自己的 `Content-Range`** 为准校验
+  （`parseContentRangeHeader`）：起始偏移不符（`RANGE MISMATCH`）或长度不足
+  （`TRUNCATED`）都不再当整块使用，而是有限重试
+  （`maxShortBlockRetries`），失败则让播放器侧自己重试；不会再被
+  `data.length < chunkSize` 提前 break 掉整个 relay。
+- **缓存短块**：从磁盘读出的块用 `expectedBlockLength` 校验，不符则删除并重新拉取
+  （`NetdiskBlockCache.delete`），堵住「短块写进缓存后被永久复用」。
+- **200 忽略 Range**：`_relayWholeFile` 现在按客户端请求的 `start` 切片：已知实体
+  长度时回 **206 + Content-Range** 并自行 skip，open-ended 请求不再从字节 0 整文件
+  转发、seek 不再变成「从头下载」；只有 chunked（无长度）才退化为 200。
+
+### 3. 卡顿结束后的一次重同步（兜底，防止仍出现固定偏移）
+
+`TvExoPlayerBridge` 现在跟踪 READY→BUFFERING→READY 的**真卡顿**（排除 seek 引发的
+buffering、初始 prepare 与切轨）：
+
+- 卡顿期间收到 `AnalyticsListener.onAudioUnderrun`，或卡顿时长 ≥
+  `RESYNC_MIN_STALL_MS`（1.5 s），且当前选中音轨属于 FFmpeg 软解集合
+  （AC3/EAC3/DTS/DTS-HD/TrueHD…），READY 后 `RESYNC_SETTLE_MS`（0.5 s）执行一次
+  位置保持的 flush —— 即用户手动 seek 的那一步。
+- 因为 `ExoPlayerImplInternal` 会把「seek 到当前位置」当作 no-op，这里 seek 到
+  `currentPosition + 1 ms` 以强制触发 renderer flush。
+- 日志：`av_resync scheduled ...` / `av_resync seek pos=...`，logcat tag
+  `TvExoPlayer`。
+
+### 测试与验证
+
+- 新增/更新单测：`test/player_av_sync_test.dart`（补偿值 clamp/格式化）、
+  `test/netdisk_range_plan_test.dart`（`expectedBlockLength`、
+  `parseContentRangeHeader`）、`test/netdisk_transport_test.dart`（截断块重试、
+  磁盘短块丢弃、200 忽略 Range 的固定/开放式切片）。`flutter analyze`、完整
+  `flutter test` 通过（`player_subtitle_activation_order_test.dart` 的 2 例因本机缺少
+  `build/libmpv/libmpv-2.dll` 失败，与本次改动无关）。
+- 真机：`flutter build apk --release` 通过；`adb install -r` 覆盖安装后启动无异常。
+
+### 仍需人工确认的场景
+
+1. **恒定偏移校准**：播放那个偏移的片源 → 播放器菜单「音轨」→ 底部「音画同步 ·
+   按片源记忆」，点「声音延后 0.5s」（或 0.1s 微调）到口型对齐。**只记在这个片源
+   上**，其它片源一律不受影响；下次播放同一片源自动生效。
+2. **卡顿后额外漂移**：限速到码率以下的复现实验应确认恢复后不再有偏移；若日志出现
+   `av_resync seek` 而画面仍偏，需要抓 `onAudioUnderrun` / 视频 PTS 进一步定位。
+3. **实测数据（2026-10-19 01:10）**：该片源音轨是 `audio/eac3` 48 kHz 立体声、
+   `encoderDelay=0`（容器没声明延迟），软解路径成立；也就是说这 ~1 s 不来自容器，
+   而是 FFmpeg EAC3 解码/供数或 sink 起始锚点一侧，暂未继续深挖。
+
+## 后续可选项
+
+- 已实现「音画同步」补偿：ExoPlayer 走音频时钟前移，mpv 走 `audio-delay`。
+- 若希望完全不依赖卡顿兜底 seek：可把 `RESYNC_MIN_STALL_MS` 调高或加设置开关。
+- 想彻底自动对齐，需要在设备上量测「视频呈现时刻 vs 音频输出时刻」（如录制/光电
+  对拍）；media3 没有公开的 A/V offset API，无法仅凭时钟自估。
+
+## 原始修复方向（保留，供追溯）
+
+1. **升级 media3 1.4.1 → 1.11.x**：对症 A —— 已做（1.11.1）。
+2. **代理补短块校验 + 200-忽略-Range 时按客户端 Range 切片**：堵住 B —— 已做。
+3. **手动「音频延迟」补偿** —— 已做（本文「恒定偏移」一节），也确认它是现场主症状
+   的正解。
 
 ## 关键文件索引
 
 | 文件 | 关注点 |
 |------|--------|
-| `android/app/src/main/kotlin/.../tv_exo/TvExoPlayerBridge.kt` | renderersFactory、LoadControl |
+| `android/app/src/main/kotlin/.../tv_exo/TvExoPlayerBridge.kt` | renderersFactory、LoadControl、音画同步补偿 sink、卡顿兜底重同步 |
 | `android/app/src/main/media3ffmpeg/androidx/media3/decoder/ffmpeg/` | vendored FFmpeg 音频解码 |
-| `android/app/build.gradle.kts` | media3 版本锁定处 |
-| `lib/core/player/netdisk_transport.dart` | loopback 代理、4 MB 块、重试 |
-| `lib/core/player/netdisk_block_cache.dart` | 磁盘块缓存（无长度校验） |
-| `lib/screens/exo_player_screen.dart` | 手机侧重开/退避逻辑 |
+| `android/app/build.gradle.kts` | media3 版本锁定处（现 1.11.1） |
+| `lib/core/player/player_av_sync.dart` | 音画同步取值范围/格式化（纯函数） |
+| `lib/core/player/netdisk_transport.dart` | loopback 代理、4 MB 块、重试、短块/200 切片 |
+| `lib/core/player/netdisk_range_plan.dart` | `expectedBlockLength` / `parseContentRangeHeader`（纯函数） |
+| `lib/core/player/netdisk_block_cache.dart` | 磁盘块缓存（`delete` 丢弃坏块） |
+| `lib/screens/exo_player_screen.dart` | 手机侧重开/退避逻辑、音画同步应用 |

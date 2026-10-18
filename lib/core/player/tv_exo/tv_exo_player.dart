@@ -174,6 +174,13 @@ class TvExoPlayer {
   Future<void> setPlaybackSpeed(double speed) =>
       _method.invokeMethod<void>('setPlaybackSpeed', {'speed': speed});
 
+  /// 音画同步补偿（音频相对画面的延迟），毫秒；正 = 声音延后。
+  Future<void> setAudioDelayMs(int delayMs) =>
+      _method.invokeMethod<void>('setAudioDelayMs', {
+        'delayMs': delayMs,
+        'sessionId': sessionId,
+      });
+
   Future<void> stop() =>
       _method.invokeMethod<void>('stop', {'sessionId': sessionId});
 

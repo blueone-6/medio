@@ -7,6 +7,8 @@ import 'package:media_kit/media_kit.dart';
 
 import '../../core/layout/platform_layout.dart';
 import '../../core/player/player_audio_track.dart';
+import '../../core/player/player_av_sync.dart';
+import '../../core/player/player_mpv_properties.dart';
 import '../../core/logging/app_log.dart';
 import '../tv/tv_keyboard_handler.dart';
 import '../../core/player/apply_emby_subtitle.dart';
@@ -89,6 +91,10 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   String? _activeEmbySubtitleId;
   String? _pendingEmbySubtitleId;
   bool _autoSubtitleActive = false;
+  /// mpv `audio-delay` (seconds) for the current media; refreshed from mpv when
+  /// the menu opens. Persisted per item by [PlayerControls._adjustAudioDelay],
+  /// applied by the player screen whenever a source is opened.
+  double _audioDelaySeconds = 0;
   /// Set once the user has picked a subtitle from the menu. After that the
   /// manually-set [_activeEmbySubtitleId] is authoritative — the auto-stale
   /// reconciliation in [_syncActiveSubtitleFromCurrentTrack] must not override
@@ -1492,6 +1498,122 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
         });
   }
 
+  /// 音画同步（音频延迟），正 = 声音延后；mpv `audio-delay` 直接改音频时间轴。
+  /// **按片源记忆**：值写进 `itemId` 的存储，换片时由 `player_screen` 应用各自的值。
+  Future<void> _adjustAudioDelay(int deltaMs) async {
+    _notify();
+    await _refreshAudioDelayFromMpv();
+    final nextSecs =
+        clampAudioDelayMs((_audioDelaySeconds * 1000).round() + deltaMs);
+    try {
+      _audioDelaySeconds = nextSecs / 1000.0;
+      await _player.setMpvProperty('audio-delay', mpvAudioDelaySeconds(nextSecs));
+      await ref
+          .read(settingsServiceProvider)
+          .setAudioDelayMsFor(widget.itemId, nextSecs);
+    } catch (e, st) {
+      AppLog.instance.e(
+        'PlayerControls',
+        'adjustAudioDelay failed deltaMs=$deltaMs',
+        error: e,
+        stackTrace: st,
+      );
+    }
+  }
+
+  /// mpv keeps `audio-delay` across chrome rebuilds; this widget does not.
+  Future<void> _refreshAudioDelayFromMpv() async {
+    final raw = await _player.getMpvProperty('audio-delay');
+    _audioDelaySeconds = double.tryParse(raw ?? '') ?? 0;
+  }
+
+  void _showAudioDelayDialog() {
+    _notify();
+    unawaited(() async {
+      await _refreshAudioDelayFromMpv();
+      if (!mounted) return;
+      var cur = (_audioDelaySeconds * 1000).round();
+      showDialog<void>(
+        context: context,
+        builder: (ctx) {
+          var dialogAlive = true;
+          return StatefulBuilder(builder: (ctx, setDiag) {
+            void safeSetDiag(VoidCallback fn) {
+              if (dialogAlive && ctx.mounted) setDiag(fn);
+            }
+
+            final accent = _playerAccent(ctx);
+            return AlertDialog(
+              backgroundColor: _popupBg,
+              title: const Text('音画同步',
+                  style: TextStyle(color: _foreground, fontSize: 16)),
+              content: SizedBox(
+                  width: 320,
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Text(describeAudioDelay(cur),
+                        style: const TextStyle(
+                            color: _foreground,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 16),
+                    Slider(
+                        value: cur.toDouble(),
+                        min: audioDelayMinMs.toDouble(),
+                        max: audioDelayMaxMs.toDouble(),
+                        divisions: 40,
+                        label: formatAudioDelayMs(cur),
+                        activeColor: accent,
+                        onChanged: (v) => safeSetDiag(() => cur = v.round()),
+                        onChangeEnd: (v) async {
+                          final r = clampAudioDelayMs(v.round());
+                          _audioDelaySeconds = r / 1000.0;
+                          try {
+                            await _player.setMpvProperty(
+                                'audio-delay', mpvAudioDelaySeconds(r));
+                            await ref
+                                .read(settingsServiceProvider)
+                                .setAudioDelayMsFor(widget.itemId, r);
+                          } catch (_) {}
+                        }),
+                    const SizedBox(height: 8),
+                    Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          TextButton(
+                              onPressed: () async {
+                                safeSetDiag(() => cur = 0);
+                                _audioDelaySeconds = 0;
+                                try {
+                                  await _player.setMpvProperty(
+                                      'audio-delay', mpvAudioDelaySeconds(0));
+                                  await ref
+                                      .read(settingsServiceProvider)
+                                      .setAudioDelayMsFor(widget.itemId, 0);
+                                } catch (_) {}
+                              },
+                              child: const Text('重置',
+                                  style: TextStyle(color: _foregroundDim))),
+                          Text('声音比画面快 → 向「延后」方向调',
+                              style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.4),
+                                  fontSize: 12)),
+                        ]),
+                  ])),
+              actions: [
+                TextButton(
+                    onPressed: () {
+                      dialogAlive = false;
+                      Navigator.of(ctx).pop();
+                    },
+                    child:
+                        const Text('完成', style: TextStyle(color: _foreground)))
+              ],
+            );
+          });
+        });
+    }());
+  }
+
   // ── Reusable icon buttons ──
 
   static const _iconStyle = ButtonStyle(
@@ -1545,6 +1667,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   ) async {
     _notify();
     await _refreshEmbyTrackMap();
+    await _refreshAudioDelayFromMpv();
 
     final settings = ref.read(settingsServiceProvider);
     final offset = settings.subtitleOffsetMs;
@@ -1578,6 +1701,38 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
                 popSheet();
               },
             ),
+        ];
+        final avDelay = (_audioDelaySeconds * 1000).round();
+        final avDelayRows = [
+          PlayerMenuRow(label: '当前', value: describeAudioDelay(avDelay)),
+          PlayerMenuRow(
+            label: '声音延后 0.1s',
+            onTap: () {
+              unawaited(_adjustAudioDelay(100));
+              refresh();
+            },
+          ),
+          PlayerMenuRow(
+            label: '声音提前 0.1s',
+            onTap: () {
+              unawaited(_adjustAudioDelay(-100));
+              refresh();
+            },
+          ),
+          PlayerMenuRow(
+            label: '重置同步',
+            onTap: () {
+              unawaited(_adjustAudioDelay(-avDelay));
+              refresh();
+            },
+          ),
+          PlayerMenuRow(
+            label: '精确调节',
+            onTap: () {
+              popSheet();
+              _showAudioDelayDialog();
+            },
+          ),
         ];
         final subRows = _buildSubtitleMenuRows(tracks, currentSub, popSheet);
         final offsetRows = [
@@ -1613,6 +1768,10 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
               label: '字幕', value: subLabel, children: subRows),
           PlayerMenuRow(
               label: '字幕偏移', value: _fmtOffset(offset), children: offsetRows),
+          PlayerMenuRow(
+              label: '音画同步',
+              value: describeAudioDelay(avDelay),
+              children: avDelayRows),
         ];
       },
     );

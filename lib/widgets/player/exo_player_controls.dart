@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/player/exo/exo_track_selection.dart';
 import '../../core/player/exo/video_fit_mode.dart';
+import '../../core/player/player_av_sync.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radius.dart';
 import '../../models/emby/emby_subtitle_option.dart';
@@ -39,6 +40,9 @@ class ExoPlayerControls extends StatefulWidget {
     required this.readSubtitleOffsetMs,
     required this.onAdjustSubtitleDelay,
     required this.onResetSubtitleDelay,
+    required this.readAudioDelayMs,
+    required this.onAdjustAudioDelay,
+    required this.onResetAudioDelay,
     this.gestureSeekPreviewSeconds,
     this.isFullScreen = false,
     this.onToggleFullScreen,
@@ -94,6 +98,12 @@ class ExoPlayerControls extends StatefulWidget {
   final ValueGetter<int> readSubtitleOffsetMs;
   final void Function(int deltaMs) onAdjustSubtitleDelay;
   final VoidCallback onResetSubtitleDelay;
+
+  /// 音画同步补偿 in ms (正 = 声音延后). Read through a getter for the same
+  /// reason as [readSubtitleOffsetMs]: the chrome disposes while a sheet is open.
+  final ValueGetter<int> readAudioDelayMs;
+  final void Function(int deltaMs) onAdjustAudioDelay;
+  final VoidCallback onResetAudioDelay;
 
   final ValueListenable<int>? gestureSeekPreviewSeconds;
   final bool isFullScreen;
@@ -337,6 +347,12 @@ class _ExoPlayerControlsState extends State<ExoPlayerControls> {
   ) {
     final current = widget.currentAudio;
     final anyPlayable = widget.audioTracks.isNotEmpty;
+
+    void adjustAudioDelay(int deltaMs) {
+      widget.onAdjustAudioDelay(deltaMs);
+      refresh();
+    }
+
     return [
       for (final t in widget.audioTracks)
         PlayerMenuRow(
@@ -358,6 +374,35 @@ class _ExoPlayerControlsState extends State<ExoPlayerControls> {
           value: anyPlayable ? '不可选' : '无声播放',
           onTap: null,
         ),
+      // 恒定偏移补偿：个别软解片源（现场实测一部 EAC3 remux 约 1 s）需要手动
+      // 校准；按片源记忆，未记录过的片源一律 0。
+      PlayerMenuRow(
+        sectionTitle:
+            '音画同步 · 按片源记忆（${describeAudioDelay(widget.readAudioDelayMs())}）',
+      ),
+      PlayerMenuRow(
+        label: '声音延后 0.1s',
+        onTap: () => adjustAudioDelay(audioDelayStepMs),
+      ),
+      PlayerMenuRow(
+        label: '声音提前 0.1s',
+        onTap: () => adjustAudioDelay(-audioDelayStepMs),
+      ),
+      PlayerMenuRow(
+        label: '声音延后 0.5s',
+        onTap: () => adjustAudioDelay(500),
+      ),
+      PlayerMenuRow(
+        label: '声音提前 0.5s',
+        onTap: () => adjustAudioDelay(-500),
+      ),
+      PlayerMenuRow(
+        label: '重置同步',
+        onTap: () {
+          widget.onResetAudioDelay();
+          refresh();
+        },
+      ),
     ];
   }
 

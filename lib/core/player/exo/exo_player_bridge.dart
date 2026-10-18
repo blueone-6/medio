@@ -245,6 +245,16 @@ class ExoPlayerBridge {
         'sessionId': sessionId,
       });
 
+  /// 音画同步补偿（音频相对画面的延迟），毫秒；正 = 声音延后。
+  ///
+  /// 恒定偏移（软解 Dolby/DTS 片源上常见）无法由播放器自动推断，用户校准一次即
+  /// 可；见 `player_av_sync.dart`。立即生效，不需要重建播放器。
+  Future<void> setAudioDelayMs(int delayMs) =>
+      _method.invokeMethod<void>('setAudioDelayMs', {
+        'delayMs': delayMs,
+        'sessionId': sessionId,
+      });
+
   /// Scales native (muxed) subtitle text; 1.0 = the authored default (42).
   Future<void> setSubtitleFontScale(double scale) =>
       _method.invokeMethod<void>('setSubtitleFontScale', {'scale': scale});

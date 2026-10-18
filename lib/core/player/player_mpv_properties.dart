@@ -15,4 +15,19 @@ extension PlayerMpvProperties on Player {
     if (platform is! native.NativePlayer) return;
     await platform.setProperty(name, value);
   }
+
+  /// Reads an mpv property as a string, or null when it is unavailable.
+  ///
+  /// Used for runtime-only properties (e.g. `audio-delay`) whose value mpv
+  /// keeps across chrome rebuilds — the widget cannot.
+  Future<String?> getMpvProperty(String name) async {
+    if (kIsWeb) return null;
+    final platform = this.platform;
+    if (platform is! native.NativePlayer) return null;
+    try {
+      return await platform.getProperty(name, waitForInitialization: false);
+    } catch (_) {
+      return null;
+    }
+  }
 }

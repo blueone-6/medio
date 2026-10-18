@@ -28,7 +28,11 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.ForwardingAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -65,6 +69,102 @@ class TvExoPlayerBridge(
     /// briefly decode from 0 before jumping to the bookmark.
     private var pendingAutoPlay = false
     private var hdrOutputActive = false
+
+    // ── A/V re-sync after a rebuffer ──
+    //
+    // ExoPlayer's master clock is the audio renderer, and a network rebuffer
+    // stops and restarts both renderers (and the audio clock) around the stall.
+    // The observed failure is a fixed tens-to-hundreds-of-ms offset afterwards,
+    // with audio ahead of picture, that only clears on the next seek/flush:
+    // see docs/superpowers/specs/2026-10-18-android-av-desync-research.md.
+    //
+    // The clock-side fixes live in media3 1.8.0+ (this build is on 1.11.1), but
+    // a rebuffer can still leave a residual offset, so a real rebuffer is
+    // followed by one position-preserving seek — the same flush the user
+    // performs manually. It is gated to soft-decoded (FFmpeg) audio, i.e.
+    // exactly the AC3/EAC3/DTS/TrueHD remuxes that stall, and skipped for
+    // seek-induced buffering.
+    private var lastPlaybackState = Player.STATE_IDLE
+    private var rebufferStartedAtMs = C.TIME_UNSET
+    private var rebufferWhilePlaying = false
+    private var audioUnderranWhileBuffering = false
+    private var seekPending = false
+    private var resyncScheduled = false
+
+    private val avResyncRunnable = Runnable {
+        resyncScheduled = false
+        val p = player ?: return@Runnable
+        if (p.playbackState != Player.STATE_READY || !p.playWhenReady) return@Runnable
+        if (seekPending) return@Runnable
+        val pos = p.currentPosition
+        if (pos <= 0) return@Runnable
+        // A seek to the position the player already reports is a no-op in
+        // ExoPlayerImplInternal, so nudge by 1 ms to force the renderer flush.
+        Log.i(TAG, "av_resync seek pos=$pos")
+        seekPending = true
+        p.seekTo(pos + 1)
+    }
+
+    // ── 音画同步 (A/V offset compensation) ──
+    //
+    // A constant audio/video offset that is independent of the network is a
+    // physical property of the pipelines (video decode → Surface → display vs
+    // the audio output device / soft decoder). ExoPlayer cannot know it, so the
+    // user calibrates it once; see lib/core/player/player_av_sync.dart and
+    // docs/superpowers/specs/2026-10-18-android-av-desync-research.md.
+    //
+    // ExoPlayer releases video frames against the audio renderer's clock, so the
+    // offset is applied there: positive `audioDelayUs` (声音延后) moves the
+    // clock forward, which advances the picture — mpv's `--audio-delay` sign
+    // convention. Written from the platform thread, read from the playback
+    // thread every clock query, hence @Volatile.
+    @Volatile
+    private var audioDelayUs = 0L
+
+    /**
+     * Wraps the shared audio sink so the media clock the video renderer syncs to
+     * carries the user's A/V offset.
+     *
+     * The sink is created once by [buildRenderersFactory] and shared by the
+     * MediaCodec and FFmpeg audio renderers, so both paths get it.
+     */
+    private inner class AvOffsetAudioSink(delegate: AudioSink) : ForwardingAudioSink(delegate) {
+        override fun getCurrentPositionUs(sourceEnded: Boolean): Long {
+            val base = super.getCurrentPositionUs(sourceEnded)
+            val offset = audioDelayUs
+            if (base == C.TIME_UNSET || offset == 0L) return base
+            return base + offset
+        }
+    }
+
+    private fun buildRenderersFactory(): DefaultRenderersFactory =
+        object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioOutputPlaybackParams: Boolean,
+            ): AudioSink? {
+                val sink = super.buildAudioSink(
+                    context,
+                    enableFloatOutput,
+                    enableAudioOutputPlaybackParams,
+                ) ?: return null
+                return AvOffsetAudioSink(sink)
+            }
+        }.setExtensionRendererMode(
+            DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON,
+        )
+
+    /** 音画同步补偿，毫秒；正 = 声音延后。Clamped to ±2000 ms. */
+    fun setAudioDelayMs(delayMs: Long, sessionId: Int = 0) {
+        if (!ownsSession(sessionId)) return stale("setAudioDelayMs", sessionId)
+        val clamped = delayMs.coerceIn(-2000L, 2000L)
+        if (clamped * 1000L == audioDelayUs) return
+        audioDelayUs = clamped * 1000L
+        Log.i(TAG, "audio_delay=${clamped}ms")
+    }
+
+    fun getAudioDelayMs(): Long = audioDelayUs / 1000L
 
     // ── Phone-extended state ──
     /** Position event cadence, ms. TV keeps 1000; phone uses 250. */
@@ -173,8 +273,133 @@ class TvExoPlayerBridge(
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
+    private val analyticsListener = object : AnalyticsListener {
+        override fun onAudioInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime,
+            format: Format,
+            decoderReuseEvaluation: DecoderReuseEvaluation?,
+        ) {
+            // Container-level audio timing (encoder delay/padding) is handled by
+            // the sink's trimmer; logging it keeps a future constant-offset
+            // report diagnosable without a device round-trip.
+            Log.i(
+                TAG,
+                "audio format mime=${format.sampleMimeType} rate=${format.sampleRate} " +
+                    "ch=${format.channelCount} pcm=${format.pcmEncoding} " +
+                    "encoderDelay=${format.encoderDelay} " +
+                    "encoderPadding=${format.encoderPadding} " +
+                    "avDelay=${getAudioDelayMs()}ms",
+            )
+        }
+
+        override fun onAudioUnderrun(
+            eventTime: AnalyticsListener.EventTime,
+            bufferSize: Int,
+            bufferSizeMs: Long,
+            elapsedSinceLastFeedMs: Long,
+        ) {
+            // Only meaningful while the player is stalled on the network: an
+            // underrun before playout starts or after pause is normal.
+            if (player?.playbackState != Player.STATE_BUFFERING) return
+            audioUnderranWhileBuffering = true
+            Log.i(
+                TAG,
+                "audio underrun during buffering buffer=${bufferSizeMs}ms " +
+                    "elapsedSinceFeed=$elapsedSinceLastFeedMs",
+            )
+        }
+    }
+
+    /**
+     * Records the buffer/seek state that [avResyncRunnable] needs.
+     *
+     * A READY→BUFFERING transition with playback intent is a rebuffer (as
+     * opposed to a seek, the initial prepare, or a track change). The resync
+     * only runs for soft-decoded audio, so ordinary hardware-decoded playback
+     * keeps its previous seek behaviour.
+     */
+    private fun trackRebufferForResync(state: Int) {
+        val wasReady = lastPlaybackState == Player.STATE_READY
+        lastPlaybackState = state
+        when (state) {
+            Player.STATE_BUFFERING -> {
+                if (wasReady && player?.playWhenReady == true) {
+                    if (seekPending) {
+                        // Buffering caused by our own seek: nothing to do.
+                        rebufferWhilePlaying = false
+                        rebufferStartedAtMs = C.TIME_UNSET
+                    } else {
+                        rebufferWhilePlaying = true
+                        rebufferStartedAtMs = SystemClock.elapsedRealtime()
+                        audioUnderranWhileBuffering = false
+                    }
+                } else {
+                    rebufferWhilePlaying = false
+                    rebufferStartedAtMs = C.TIME_UNSET
+                }
+            }
+
+            Player.STATE_READY -> {
+                seekPending = false
+                if (!rebufferWhilePlaying) return
+                rebufferWhilePlaying = false
+                val startedAt = rebufferStartedAtMs
+                rebufferStartedAtMs = C.TIME_UNSET
+                val stalledMs =
+                    if (startedAt == C.TIME_UNSET) 0L
+                    else SystemClock.elapsedRealtime() - startedAt
+                if (!audioUnderranWhileBuffering && stalledMs < RESYNC_MIN_STALL_MS) {
+                    return
+                }
+                scheduleAvResync(stalledMs)
+            }
+
+            Player.STATE_IDLE, Player.STATE_ENDED -> {
+                seekPending = false
+                rebufferWhilePlaying = false
+                rebufferStartedAtMs = C.TIME_UNSET
+                cancelAvResync()
+            }
+        }
+    }
+
+    private fun scheduleAvResync(stalledMs: Long) {
+        val p = player ?: return
+        if (!p.playWhenReady) return
+        if (!softDecodedAudioSelected()) return
+        if (resyncScheduled) return
+        resyncScheduled = true
+        Log.i(
+            TAG,
+            "av_resync scheduled after ${stalledMs}ms rebuffer " +
+                "(underrun=$audioUnderranWhileBuffering)",
+        )
+        // Let playout actually resume so the seek lands on a moving player
+        // rather than inside the same buffering transition.
+        mainHandler.postDelayed(avResyncRunnable, RESYNC_SETTLE_MS)
+    }
+
+    private fun cancelAvResync() {
+        resyncScheduled = false
+        mainHandler.removeCallbacks(avResyncRunnable)
+    }
+
+    /** True when the selected audio track is one the FFmpeg extension decodes. */
+    private fun softDecodedAudioSelected(): Boolean {
+        val tracks = player?.currentTracks ?: return false
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until group.length) {
+                if (!group.isTrackSelected(i)) continue
+                return group.getTrackFormat(i).sampleMimeType in SOFT_AUDIO_MIMES
+            }
+        }
+        return false
+    }
+
     private val playerListener = object : Player.Listener {
         override fun onPlaybackStateChanged(state: Int) {
+            trackRebufferForResync(state)
             updateKeepScreenOn()
             // Visible in logcat (the Dart-side logs only reach the app log file):
             // BUFFERING→READY transitions are what "seek stalls" look like from
@@ -257,6 +482,13 @@ class TvExoPlayerBridge(
             newPosition: Player.PositionInfo,
             reason: Int,
         ) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK &&
+                player?.playbackState != Player.STATE_BUFFERING
+            ) {
+                // The seek landed in existing buffer, so no BUFFERING→READY
+                // cycle will clear the flag.
+                seekPending = false
+            }
             if (!customSubtitleRendering) return
             val p = player ?: return
             // Seeks (and timeline refreshes) invalidate buffered future cues.
@@ -577,10 +809,7 @@ class TvExoPlayerBridge(
         // hardware decoding — and battery use — is untouched for everything
         // else; when the library is missing (other ABIs) media3 logs and falls
         // back exactly as before.
-        val renderersFactory = DefaultRenderersFactory(context)
-            .setExtensionRendererMode(
-                DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON,
-            )
+        val renderersFactory = buildRenderersFactory()
         val builder = ExoPlayer.Builder(context, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .setTrackSelector(trackSelector)
@@ -596,6 +825,7 @@ class TvExoPlayerBridge(
         }
         return builder.build().also { exo ->
             exo.addListener(playerListener)
+            exo.addAnalyticsListener(analyticsListener)
             exo.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
             exo.volume = if (muted) 0f else desiredVolume.toFloat()
             Log.i(
@@ -648,8 +878,14 @@ class TvExoPlayerBridge(
         detachPhoneExtras()
         playerView?.player = null
         player?.removeListener(playerListener)
+        player?.removeAnalyticsListener(analyticsListener)
         player?.release()
         player = null
+        cancelAvResync()
+        seekPending = false
+        rebufferWhilePlaying = false
+        rebufferStartedAtMs = C.TIME_UNSET
+        lastPlaybackState = Player.STATE_IDLE
         cueHistory.clear()
         delaySubtitleView?.setCues(emptyList())
 
@@ -717,6 +953,7 @@ class TvExoPlayerBridge(
         // the *next* episode to the old position.
         if (!ownsSession(sessionId)) return stale("seekTo", sessionId)
         Log.i(TAG, "seekTo $positionMs (from ${player?.currentPosition ?: -1})")
+        seekPending = true
         player?.seekTo(positionMs.coerceAtLeast(0))
     }
 
@@ -963,6 +1200,7 @@ class TvExoPlayerBridge(
             return
         }
         stopPositionUpdates()
+        cancelAvResync()
         player?.stop()
         player?.clearMediaItems()
         cueHistory.clear()
@@ -981,11 +1219,13 @@ class TvExoPlayerBridge(
             return
         }
         stopPositionUpdates()
+        cancelAvResync()
         restoreHdrOutput()
         detachPhoneExtras()
         playerView?.keepScreenOn = false
         playerView?.player = null
         player?.removeListener(playerListener)
+        player?.removeAnalyticsListener(analyticsListener)
         player?.release()
         player = null
         // Deliberately keep `playerView`: on an episode switch the *new*
@@ -1076,6 +1316,24 @@ class TvExoPlayerBridge(
         private const val BUFFER_LOG_INTERVAL_MS = 5_000L
         private const val CUE_HISTORY_WINDOW_MS = 180_000L
         private const val CUE_HISTORY_MAX_ENTRIES = 2048
+
+        /** Rebuffers at least this long are re-synced even without an underrun. */
+        private const val RESYNC_MIN_STALL_MS = 1_500L
+
+        /** Delay between READY and the re-sync flush, so playout has resumed. */
+        private const val RESYNC_SETTLE_MS = 500L
+
+        /** Audio codecs the bundled FFmpeg extension decodes (see buildPlayer). */
+        private val SOFT_AUDIO_MIMES = setOf(
+            MimeTypes.AUDIO_AC3,
+            MimeTypes.AUDIO_E_AC3,
+            MimeTypes.AUDIO_E_AC3_JOC,
+            MimeTypes.AUDIO_DTS,
+            MimeTypes.AUDIO_DTS_EXPRESS,
+            MimeTypes.AUDIO_DTS_HD,
+            MimeTypes.AUDIO_DTS_UHD_P2,
+            MimeTypes.AUDIO_TRUEHD,
+        )
 
         /** Subtitle line height as a fraction of the displayed video height. */
         private const val SUBTITLE_HEIGHT_FRACTION = 0.055f

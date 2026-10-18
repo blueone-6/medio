@@ -2,15 +2,22 @@
 
 These four files (`FfmpegAudioDecoder`, `FfmpegAudioRenderer`,
 `FfmpegDecoderException`, `FfmpegLibrary`) plus `package-info.java` are taken
-**verbatim from AndroidX Media3 tag `1.4.1`** (Apache License 2.0, © The Android
+**verbatim from AndroidX Media3 tag `1.11.1`** (Apache License 2.0, © The Android
 Open Source Project):
 
-<https://github.com/androidx/media/tree/1.4.1/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg>
+<https://github.com/androidx/media/tree/1.11.1/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg>
 
 They are vendored rather than depended upon because media3 does not publish the
 FFmpeg extension to Google Maven — it must be built from source — and this
 directory is registered as an extra Java source directory in
 `android/app/build.gradle.kts`.
+
+**Keep this in step with the media3 version.** The JNI method names and
+signatures in `tool/build_ffmpeg_decoder.ps1`'s sources
+(`ffmpeg_jni.cc`) are unchanged since 1.4.1, so the existing
+`libffmpegJNI.so` still registers against these bindings — but media3's
+`DecoderAudioRenderer`/`AudioSink` APIs it compiles against do change between
+releases, and a mismatch fails at build time rather than at runtime.
 
 **Deviations from upstream**
 

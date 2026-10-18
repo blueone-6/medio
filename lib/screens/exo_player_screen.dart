@@ -18,6 +18,7 @@ import '../core/player/external_cdn_headers.dart';
 import '../core/player/netdisk_transport.dart';
 import '../core/player/netdisk_types.dart';
 import '../core/player/playback_resume.dart';
+import '../core/player/player_av_sync.dart';
 import '../core/player/player_codec_error.dart';
 import '../core/player/player_home_refresh.dart';
 import '../core/player/player_volume_memory.dart';
@@ -152,6 +153,14 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
   ExoSubtitleTarget? _subtitleTarget;
   List<ParsedSubtitleCue> _externalCues = const [];
   int _subtitleOffsetMs = 0;
+
+  /// 音画同步补偿（音频相对画面的延迟），毫秒；正 = 声音延后。
+  ///
+  /// **按片源记忆**：只有个别片源自带音频延迟（现场实测一部 EAC3 软解 remux 需要
+  /// 约 1 s），全局值会把正常片源一起带偏，所以未记录过的片源一律 0，并且每次
+  /// [_openSource] 都会把本片源的值重新下发给 native（bridge 字段会跨 player
+  /// 重建保留，不主动下发就会漏到下一个片源）。
+  int _audioDelayMs = 0;
   ExoPlayerTrack? _currentAudio;
   double _speed = 1.0;
   bool _muted = false;
@@ -211,6 +220,8 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _subtitleOffsetMs = ref.read(settingsServiceProvider).subtitleOffsetMs;
+    _audioDelayMs =
+        ref.read(settingsServiceProvider).audioDelayMsFor(widget.itemId);
     _videoFitMode = ref.read(settingsServiceProvider).videoFitMode;
     _player = ExoPlayerBridge();
     _stateSub = _player.stateStream.listen((s) {
@@ -537,6 +548,10 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
       if (_subtitleOffsetMs > 0) {
         await _player.setSubtitleDelayMs(_subtitleOffsetMs);
       }
+      // Always push the current value (0 for a fresh screen): the native bridge
+      // keeps it across player rebuilds, so a previous video's offset must not
+      // leak into this one.
+      await _player.setAudioDelayMs(_audioDelayMs);
       _appliedVideoFitMode = null;
       _applyVideoFitMode();
 
@@ -774,6 +789,23 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
     setState(() => _subtitleOffsetMs = 0);
     unawaited(settings.setSubtitleOffsetMs(0));
     unawaited(_player.setSubtitleDelayMs(0));
+  }
+
+  /// 音画同步：正 = 声音延后。**按片源记忆**（按 itemId 存，未记录的片源恒为
+  /// 0），换片/换集自动用各自的值，不会影响正常片源。
+  void _adjustAudioDelay(int deltaMs) {
+    final settings = ref.read(settingsServiceProvider);
+    final next = clampAudioDelayMs(_audioDelayMs + deltaMs);
+    setState(() => _audioDelayMs = next);
+    unawaited(settings.setAudioDelayMsFor(widget.itemId, next));
+    unawaited(_player.setAudioDelayMs(next));
+  }
+
+  void _resetAudioDelay() {
+    final settings = ref.read(settingsServiceProvider);
+    setState(() => _audioDelayMs = 0);
+    unawaited(settings.setAudioDelayMsFor(widget.itemId, 0));
+    unawaited(_player.setAudioDelayMs(0));
   }
 
   // ── Audio / speed / volume ──
@@ -1594,6 +1626,9 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
                             readSubtitleOffsetMs: () => _subtitleOffsetMs,
                             onAdjustSubtitleDelay: _adjustSubtitleDelay,
                             onResetSubtitleDelay: _resetSubtitleDelay,
+                            readAudioDelayMs: () => _audioDelayMs,
+                            onAdjustAudioDelay: _adjustAudioDelay,
+                            onResetAudioDelay: _resetAudioDelay,
                             gestureSeekPreviewSeconds: _gestureSeekPreview,
                             isFullScreen: _androidLandscape,
                             onToggleFullScreen: _toggleAndroidOrientation,

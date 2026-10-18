@@ -3,6 +3,7 @@ import 'dart:math';
 import '../core/layout/platform_layout.dart';
 import '../core/player/exo/video_fit_mode.dart';
 import '../core/player/netdisk_cache_defaults.dart';
+import '../core/player/player_av_sync.dart';
 import '../core/storage/local_storage.dart';
 import '../core/theme/app_theme.dart';
 
@@ -71,6 +72,28 @@ class SettingsService {
 
   Future<void> setSubtitleOffsetMs(int v) =>
       _storage.setInt(StorageKeys.subtitleOffsetMs, v);
+
+  /// 音画同步（音频相对画面的延迟补偿，毫秒，正 = 声音延后）**按片源记忆**。
+  ///
+  /// 只有个别片源自带音频延迟（现场实测一部 EAC3 软解 remux 需要约 1 s），
+  /// 全局设置会把正常片源一起带偏，所以按 `itemId` 存、未记录的一律为 0。
+  /// 见 `player_av_sync.dart` 与
+  /// `docs/superpowers/specs/2026-10-18-android-av-desync-research.md`。
+  int audioDelayMsFor(String itemId) => decodeAvDelayMemory(
+        _storage.getString(StorageKeys.avDelayByItem),
+      )[itemId] ??
+      0;
+
+  Future<void> setAudioDelayMsFor(String itemId, int ms) async {
+    if (itemId.isEmpty) return;
+    final memory = decodeAvDelayMemory(
+      _storage.getString(StorageKeys.avDelayByItem),
+    );
+    await _storage.setString(
+      StorageKeys.avDelayByItem,
+      encodeAvDelayMemory(avDelayMemoryWith(memory, itemId, ms)),
+    );
+  }
 
   /// 首页「最近播放」条数上限（Emby `/Items/Resume` 的 `Limit`，1–50）。
   static const int homeRecentPlayLimitMin = 1;
