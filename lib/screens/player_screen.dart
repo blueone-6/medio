@@ -3903,6 +3903,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                             itemId: widget.itemId,
                             embySubtitles: _info?.subtitles ?? const [],
                             onUserInteraction: _onUserInteraction,
+                            onPlayPause: _togglePlayPause,
                             onSeekTo: _seekTo,
                             effectivePosition: _effectivePlaybackPosition,
                             volumeShowToken: _volumeShowToken,

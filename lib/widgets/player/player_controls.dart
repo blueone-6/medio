@@ -50,6 +50,7 @@ class PlayerControls extends ConsumerStatefulWidget {
     this.episodeListOpen = false,
     this.onToggleEpisodeList,
     this.compact = false,
+    this.onPlayPause,
   });
 
   final Player player;
@@ -73,6 +74,13 @@ class PlayerControls extends ConsumerStatefulWidget {
   final bool episodeListOpen;
   final VoidCallback? onToggleEpisodeList;
   final bool compact;
+
+  /// Toggles playback through the owning screen. The screen must be the one
+  /// driving the pause because it tracks whether the pause was user-initiated;
+  /// the stall detector would otherwise mistake a deliberate pause for a CDN
+  /// stall and re-open the stream after a few seconds. Falls back to driving
+  /// mpv directly when no callback is supplied.
+  final VoidCallback? onPlayPause;
 
   @override
   ConsumerState<PlayerControls> createState() => _PlayerControlsState();
@@ -127,6 +135,15 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   bool get _isDpad => context.inputModality == InputModality.dpad;
 
   void _notify() => widget.onUserInteraction?.call();
+
+  void _togglePlayPause(bool playing) {
+    final onPlayPause = widget.onPlayPause;
+    if (onPlayPause != null) {
+      onPlayPause();
+      return;
+    }
+    playing ? _player.pause() : _player.play();
+  }
 
   double get _tvBtnSize => 34;
 
@@ -2164,7 +2181,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
         icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
         onPressed: () {
           _notify();
-          playing ? _player.pause() : _player.play();
+          _togglePlayPause(playing);
         },
       ),
     );
@@ -2264,7 +2281,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
           size: 38,
           onPressed: () {
             _notify();
-            playing ? _player.pause() : _player.play();
+            _togglePlayPause(playing);
           },
         ),
         _spacer(_btnSpacing),
@@ -2422,7 +2439,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
               iconSize: 24,
               onPressed: () {
                 _notify();
-                playing ? _player.pause() : _player.play();
+                _togglePlayPause(playing);
               },
             ),
             _spacer(_btnSpacing),
