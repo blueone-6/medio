@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:media_client/widgets/player/player_gesture.dart';
+import 'package:media_client/widgets/player/player_gesture_hud.dart';
 // ignore: implementation_imports
 import 'package:media_client/widgets/player/player_gesture_mobile.dart'
     as mobile;
@@ -107,6 +108,147 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
 
       expect(seekSeconds, 10);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('long press right half holds speed boost until release',
+        (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final holds = <bool>[];
+      int? seekSeconds;
+      await tester.pumpWidget(
+        _androidGestureHarness(
+          child: mobile.PlayerGestureLayer(
+            onHoldSpeedChanged: holds.add,
+            onSeekRelative: (s) => seekSeconds = s,
+            player: _FakePlayer(
+              position: const Duration(minutes: 5),
+              duration: const Duration(minutes: 60),
+            ),
+            child: const SizedBox(width: 400, height: 800),
+          ),
+        ),
+      );
+
+      final layerBox = tester.renderObject<RenderBox>(
+        find.byType(mobile.PlayerGestureLayer),
+      );
+      final right = layerBox.localToGlobal(
+        Offset(layerBox.size.width * 0.75, layerBox.size.height / 2),
+      );
+      final gesture = await tester.startGesture(right);
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(holds, [true]);
+
+      await gesture.up();
+      await tester.pump();
+
+      expect(holds, [true, false]);
+      // Holding must not also accumulate a seek offset.
+      expect(seekSeconds, isNull);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('long press left half still rewinds on release',
+        (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final holds = <bool>[];
+      int? seekSeconds;
+      await tester.pumpWidget(
+        _androidGestureHarness(
+          child: mobile.PlayerGestureLayer(
+            onHoldSpeedChanged: holds.add,
+            onSeekRelative: (s) => seekSeconds = s,
+            player: _FakePlayer(
+              position: const Duration(minutes: 5),
+              duration: const Duration(minutes: 60),
+            ),
+            child: const SizedBox(width: 400, height: 800),
+          ),
+        ),
+      );
+
+      final layerBox = tester.renderObject<RenderBox>(
+        find.byType(mobile.PlayerGestureLayer),
+      );
+      final left = layerBox.localToGlobal(
+        Offset(layerBox.size.width * 0.25, layerBox.size.height / 2),
+      );
+      final gesture = await tester.startGesture(left);
+      // Long press fires at 500 ms, then the 200 ms seek ticker must run.
+      await tester.pump(const Duration(milliseconds: 1200));
+
+      expect(holds, isEmpty);
+
+      await gesture.up();
+      await tester.pump();
+
+      expect(seekSeconds, isNotNull);
+      expect(seekSeconds! < 0, isTrue);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('double tap middle toggles play/pause (no seek)',
+        (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      int playPauseTaps = 0;
+      int? seekSeconds;
+      await tester.pumpWidget(
+        _androidGestureHarness(
+          child: mobile.PlayerGestureLayer(
+            onPlayPause: () => playPauseTaps++,
+            onSeekRelative: (s) => seekSeconds = s,
+            player: _FakePlayer(
+              position: const Duration(minutes: 5),
+              duration: const Duration(minutes: 60),
+            ),
+            child: const SizedBox(width: 400, height: 800),
+          ),
+        ),
+      );
+
+      final layerBox = tester.renderObject<RenderBox>(
+        find.byType(mobile.PlayerGestureLayer),
+      );
+      final center = layerBox.localToGlobal(
+        Offset(layerBox.size.width / 2, layerBox.size.height / 2),
+      );
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tapAt(center);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(playPauseTaps, 1);
+      expect(seekSeconds, isNull);
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    testWidgets('paused shows the gesture cheat-sheet', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+
+      Future<void> pumpWithPlaying(bool isPlaying) async {
+        await tester.pumpWidget(
+          _androidGestureHarness(
+            child: mobile.PlayerGestureLayer(
+              isPlaying: isPlaying,
+              player: _FakePlayer(
+                duration: const Duration(minutes: 60),
+              ),
+              child: const SizedBox(width: 400, height: 800),
+            ),
+          ),
+        );
+        await tester.pump();
+      }
+
+      await pumpWithPlaying(false);
+      expect(_cheatSheetVisible(tester), isTrue);
+      expect(find.text('双击 播放 / 暂停'), findsOneWidget);
+
+      await pumpWithPlaying(true);
+      expect(_cheatSheetVisible(tester), isFalse);
       debugDefaultTargetPlatformOverride = null;
     });
 
@@ -265,6 +407,13 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     });
   });
+}
+
+bool _cheatSheetVisible(WidgetTester tester) {
+  final sheet = tester.widget<PlayerGestureHints>(
+    find.byType(PlayerGestureHints),
+  );
+  return sheet.visible;
 }
 
 class _FakePlayer {

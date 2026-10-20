@@ -3763,6 +3763,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                     child: PlayerGestureLayer(
                       player: _player,
                       onTap: _onVideoTap,
+                      onPlayPause: _togglePlayPause,
+                      isPlaying: _player.state.playing,
                       onSeekRelative: isAndroidMobileUi ? _seekRelative : null,
                       onSeekPreview: isAndroidMobileUi
                           ? (delta) => _gestureSeekPreview.value = delta

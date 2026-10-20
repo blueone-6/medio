@@ -4,18 +4,25 @@ import 'package:flutter/material.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 
 import '../../core/layout/platform_layout.dart';
+import '../../core/player/hold_speed.dart';
 import '../../core/player/seek_step.dart';
 import 'player_gesture_hud.dart';
 
 enum _LockedPanAxis { none, horizontal, vertical }
 
+/// Double-tap thirds: left = rewind, middle = play/pause, right = forward.
+enum _TapZone { left, middle, right }
+
 /// Android touch gestures following platform conventions:
 /// - Single tap: show/hide controls
-/// - Double tap left/right half: seek ±10s with ripple
+/// - Double tap left third: rewind 10s · middle third: play/pause ·
+///   right third: forward 10s, each with a ripple
 /// - Horizontal drag: preview timeline offset, commit on release
 /// - Vertical drag left half: brightness
 /// - Vertical drag right half: volume
-/// - Long press: accelerated seek (left=rewind, right=forward)
+/// - Long press right half: play at [holdFastForwardRate] until release
+/// - Long press left half: accelerated rewind
+/// - When paused: a translucent full-screen gesture cheat-sheet
 class PlayerGestureLayer extends StatefulWidget {
   const PlayerGestureLayer({
     super.key,
@@ -28,6 +35,8 @@ class PlayerGestureLayer extends StatefulWidget {
     this.onVolumeDelta,
     this.onBrightnessDelta,
     this.onUserInteraction,
+    this.onHoldSpeedChanged,
+    this.isPlaying = true,
     this.player,
   });
 
@@ -41,6 +50,15 @@ class PlayerGestureLayer extends StatefulWidget {
   final void Function(double delta)? onVolumeDelta;
   final void Function(double delta)? onBrightnessDelta;
   final VoidCallback? onUserInteraction;
+
+  /// Hold-to-fast-forward: `true` on long-press start (right half only),
+  /// `false` on release. When set, the right half no longer performs the
+  /// accelerated seek — it temporarily plays at [holdFastForwardRate] instead.
+  final void Function(bool active)? onHoldSpeedChanged;
+
+  /// Current playback state, used to pick the middle double-tap ripple icon
+  /// and to show the paused gesture cheat-sheet.
+  final bool isPlaying;
   final dynamic player;
 
   @override
@@ -74,6 +92,7 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
   Timer? _longPressTimer;
   Timer? _longPressSeekTimer;
   bool _longPressActive = false;
+  bool _holdSpeedActive = false;
   int _longPressDirection = 0;
   int _longPressAccumulatedSeconds = 0;
   DateTime? _longPressStartTime;
@@ -81,6 +100,7 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
   // Double-tap ripple
   Offset? _rippleCenter;
   bool _rippleForward = true;
+  IconData? _rippleIcon;
 
   // Debounce for double-tap vs single-tap
   Timer? _singleTapTimer;
@@ -93,6 +113,8 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
 
   @override
   void dispose() {
+    // Leaving the screen mid-hold must not leave the player stuck at 2x.
+    if (_holdSpeedActive) widget.onHoldSpeedChanged?.call(false);
     _hudHideTimer?.cancel();
     _longPressTimer?.cancel();
     _longPressSeekTimer?.cancel();
@@ -117,6 +139,13 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
   bool _isRightHalf(Offset localPosition, double width) =>
       localPosition.dx >= width / 2;
 
+  _TapZone _tapZoneFor(Offset localPosition, double width) {
+    if (width <= 0) return _TapZone.middle;
+    if (localPosition.dx < width / 3) return _TapZone.left;
+    if (localPosition.dx > width * 2 / 3) return _TapZone.right;
+    return _TapZone.middle;
+  }
+
   void _showHud(
     PlayerGestureHudKind kind, {
     double value = 0,
@@ -133,6 +162,11 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
     _hudHideTimer = Timer(_hudHideDelay, () {
       if (mounted) setState(() => _hudVisible = false);
     });
+  }
+
+  void _hideHudNow() {
+    _hudHideTimer?.cancel();
+    if (mounted) setState(() => _hudVisible = false);
   }
 
   void _clearSeekPreview() {
@@ -241,6 +275,11 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
   void _cancelLongPress({bool commit = true}) {
     _longPressTimer?.cancel();
     _longPressSeekTimer?.cancel();
+    if (_holdSpeedActive) {
+      _holdSpeedActive = false;
+      widget.onHoldSpeedChanged?.call(false);
+      _hideHudNow();
+    }
     if (commit && _longPressActive && _longPressAccumulatedSeconds != 0) {
       widget.onSeekRelative?.call(_longPressAccumulatedSeconds);
       widget.onSeekPreview?.call(0);
@@ -251,7 +290,20 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
     _longPressStartTime = null;
   }
 
+  /// Right half with an [PlayerGestureLayer.onHoldSpeedChanged] handler boosts
+  /// playback speed; otherwise (and on the left half) fall back to accelerated
+  /// seek, which is the only way to move backwards.
   void _startLongPressSeek(int direction) {
+    if (direction > 0 && widget.onHoldSpeedChanged != null) {
+      _holdSpeedActive = true;
+      _longPressDirection = direction;
+      _longPressStartTime = DateTime.now();
+      widget.onHoldSpeedChanged!(true);
+      _showHud(PlayerGestureHudKind.speed, value: holdFastForwardRate);
+      // Keep the HUD up for the whole hold instead of the usual 500 ms fade.
+      _hudHideTimer?.cancel();
+      return;
+    }
     _longPressDirection = direction;
     _longPressAccumulatedSeconds = 0;
     _longPressStartTime = DateTime.now();
@@ -315,7 +367,20 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
         (box != null && box.hasSize && box.size.width > 0)
             ? box.size.width
             : _layoutWidth;
-    final forward = _isRightHalf(details.localPosition, width);
+    final zone = _tapZoneFor(details.localPosition, width);
+
+    if (zone == _TapZone.middle) {
+      widget.onPlayPause?.call();
+      setState(() {
+        _rippleCenter = details.localPosition;
+        _rippleForward = true;
+        _rippleIcon =
+            widget.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded;
+      });
+      return;
+    }
+
+    final forward = zone == _TapZone.right;
     final seconds = forward ? 10 : -10;
     widget.onSeekRelative?.call(seconds);
     _showHud(PlayerGestureHudKind.seek, seekSeconds: seconds);
@@ -323,6 +388,7 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
     setState(() {
       _rippleCenter = details.localPosition;
       _rippleForward = forward;
+      _rippleIcon = null;
     });
   }
 
@@ -401,6 +467,9 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
             },
           ),
         ),
+        PlayerGestureHints(
+          visible: !widget.isPlaying && seekDur > Duration.zero,
+        ),
         PlayerGestureHud(
           visible: _hudVisible && _hudKind != PlayerGestureHudKind.none,
           kind: _hudKind,
@@ -413,6 +482,7 @@ class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
           PlayerGestureDoubleTapRipple(
             center: _rippleCenter!,
             forward: _rippleForward,
+            icon: _rippleIcon,
             onFinished: _onRippleFinished,
           ),
       ],

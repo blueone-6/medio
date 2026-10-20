@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Phone double-tap zones and a paused gesture cheat-sheet.** The phone screen
+  is split into thirds: double-tapping the left third rewinds 10 s, the middle
+  third toggles play/pause (with a play/pause ripple), and the right third
+  forwards 10 s. While playback is paused, a translucent full-screen sheet is
+  split into the same three zones (two dashed dividers) and shows each gesture
+  inside the zone it belongs to, so the copy never spells out
+  left/middle/right; it ignores pointers, so controls and gestures keep working
+  beneath it.
+- **Long-press fast-forward on Android TV and phone.** On TV, holding the
+  D-pad left/right ramps the seek step (10 s, then accelerated with hold time,
+  with a 20 s safety cutoff) and shows an on-screen target preview, committing
+  on release instead of issuing one seek per key repeat. On the phone, holding
+  the right half of the screen now plays at 2x until release — the user's chosen
+  speed is restored afterwards, and a paused video resumes only for the hold;
+  the left half keeps the accelerated rewind.
+
 ### Fixed
 
 - 音轨 sheet lists **every** track the device cannot decode, and no longer hides

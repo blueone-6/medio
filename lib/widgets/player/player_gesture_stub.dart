@@ -13,6 +13,8 @@ class PlayerGestureLayer extends StatelessWidget {
     this.onVolumeDelta,
     this.onBrightnessDelta,
     this.onUserInteraction,
+    this.onHoldSpeedChanged,
+    this.isPlaying = true,
     this.player,
   });
 
@@ -25,6 +27,8 @@ class PlayerGestureLayer extends StatelessWidget {
   final void Function(double delta)? onVolumeDelta;
   final void Function(double delta)? onBrightnessDelta;
   final VoidCallback? onUserInteraction;
+  final void Function(bool active)? onHoldSpeedChanged;
+  final bool isPlaying;
   final dynamic player;
 
   @override

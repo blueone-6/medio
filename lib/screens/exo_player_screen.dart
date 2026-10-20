@@ -15,6 +15,7 @@ import '../core/player/exo/exo_track_selection.dart';
 import '../core/player/exo/subtitle_text_parse.dart';
 import '../core/player/exo/video_fit_mode.dart';
 import '../core/player/external_cdn_headers.dart';
+import '../core/player/hold_speed.dart';
 import '../core/player/netdisk_transport.dart';
 import '../core/player/netdisk_types.dart';
 import '../core/player/playback_resume.dart';
@@ -164,6 +165,11 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
   ExoPlayerTrack? _currentAudio;
   double _speed = 1.0;
   bool _muted = false;
+
+  /// Temporary 2x while the user holds the right half of the screen.
+  bool _holdSpeedActive = false;
+  double? _speedBeforeHold;
+  bool _holdResumedFromPause = false;
 
   /// Picture scaling mode chosen by the user (persisted). The mode actually
   /// handed to the player is [effectiveVideoFitMode] — portrait always renders
@@ -818,6 +824,31 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
   void _onRatePicked(double rate) {
     setState(() => _speed = rate);
     unawaited(_player.setPlaybackSpeed(rate));
+  }
+
+  /// Hold-to-fast-forward gesture: temporarily play at [holdFastForwardRate],
+  /// then restore the user's chosen speed on release. A paused video resumes
+  /// for the duration of the hold and pauses again afterwards.
+  void _onHoldSpeedChanged(bool active) {
+    if (active == _holdSpeedActive) return;
+    _holdSpeedActive = active;
+    if (active) {
+      _speedBeforeHold = _speed;
+      // A rebuffer is not a pause: resuming here would make release pause a
+      // stream that was about to continue on its own.
+      if (!_exoState.isPlaying && !_exoState.isBuffering) {
+        _holdResumedFromPause = true;
+        unawaited(_player.play());
+      }
+      unawaited(_player.setPlaybackSpeed(holdFastForwardRate));
+      return;
+    }
+    unawaited(_player.setPlaybackSpeed(_speedBeforeHold ?? _speed));
+    _speedBeforeHold = null;
+    if (_holdResumedFromPause) {
+      _holdResumedFromPause = false;
+      unawaited(_player.pause());
+    }
   }
 
   /// Applies the user's picture mode, honouring the portrait fallback.
@@ -1544,10 +1575,17 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
                         child: PlayerGestureLayer(
                           player: _player,
                           onTap: _onVideoTap,
+                          onPlayPause: _togglePlayPause,
+                          // Buffering/loading is not a user pause: showing the
+                          // cheat-sheet there would cover the buffering pill.
+                          isPlaying: _exoState.isPlaying ||
+                              _exoState.isBuffering ||
+                              _loading,
                           onSeekRelative: _seekRelative,
                           onSeekPreview: (delta) =>
                               _gestureSeekPreview.value = delta,
                           onVolumeDelta: _changeVolume,
+                          onHoldSpeedChanged: _onHoldSpeedChanged,
                           onUserInteraction: _onUserInteraction,
                           child: const SizedBox.expand(),
                         ),

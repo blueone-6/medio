@@ -11,6 +11,7 @@ import '../core/player/episode_navigation.dart';
 import '../core/player/playback_resume.dart';
 import '../core/player/player_codec_error.dart';
 import '../core/player/player_home_refresh.dart';
+import '../core/player/seek_step.dart';
 import '../core/player/tv_exo/tv_exo_player.dart';
 import '../core/player/tv_exo/tv_exo_video_view.dart';
 import '../core/tv/tv_remote_actions.dart' show TvRemoteActions, TvRemoteSelectKeys;
@@ -27,6 +28,7 @@ import '../widgets/error_view.dart';
 import '../widgets/loading_indicator.dart';
 import '../widgets/player/buffering_indicator.dart';
 import '../widgets/player/player_episode_panel.dart';
+import '../widgets/player/player_gesture_hud.dart';
 import '../widgets/player/player_top_info.dart';
 import '../widgets/player/tv_exo_player_controls.dart';
 
@@ -101,6 +103,17 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen>
   DateTime _lastSeekAt = DateTime.now();
   ProviderContainer? _riverpodContainer;
 
+  // D-pad hold-to-seek: the remote repeats slowly, so a timer drives the
+  // acceleration curve while the key is down. The seek commits on key-up,
+  // matching the desktop/keyboard behaviour instead of hammering ExoPlayer
+  // with a seek per repeat event.
+  static const _arrowHoldTick = Duration(milliseconds: 200);
+  Timer? _arrowHoldTimer;
+  DateTime? _arrowHoldStart;
+  Duration? _arrowHoldBasePos;
+  int _arrowAccumulatedSeconds = 0;
+  int _arrowHoldDirection = 0;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -141,6 +154,7 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen>
   void dispose() {
     _chromeIdleTimer?.cancel();
     _settleTimeoutTimer?.cancel();
+    _discardArrowHold();
     disposeBufferingFeedback();
     _unregisterActiveProxy();
     HardwareKeyboard.instance.removeHandler(_onHardwareKey);
@@ -697,6 +711,7 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen>
   void _leavePlayer() {
     if (_leavingPlayer) return;
     _leavingPlayer = true;
+    _discardArrowHold();
     final exitTicks = _playbackExitPositionTicks();
     unawaited(() async {
       await _reportStoppedIfNeeded(positionTicks: exitTicks);
@@ -741,26 +756,117 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen>
     _onUserInteraction();
   }
 
+  Duration _clampToDuration(Duration target) {
+    final dur = _exoState.duration;
+    var clamped = target < Duration.zero ? Duration.zero : target;
+    if (dur > Duration.zero && clamped > dur) clamped = dur;
+    return clamped;
+  }
+
   void _seekBy(int seconds) {
-    final target = _exoState.position + Duration(seconds: seconds);
-    final clamped = target < Duration.zero ? Duration.zero : target;
     _lastSeekAt = DateTime.now();
-    unawaited(_player.seekTo(clamped));
+    unawaited(_player.seekTo(_clampToDuration(
+      _exoState.position + Duration(seconds: seconds),
+    )));
     _onUserInteraction();
   }
 
+  /// Starts the accelerated preview for a held D-pad arrow. The first step is
+  /// applied immediately; the timer ramps subsequent steps with hold time and
+  /// the seek is committed on key-up.
+  void _beginArrowHold(int direction, int baseStep) {
+    if (_arrowHoldTimer != null) return;
+    _arrowHoldDirection = direction;
+    _arrowHoldBasePos = _exoState.position;
+    _arrowAccumulatedSeconds = direction * baseStep;
+    _arrowHoldStart = DateTime.now();
+    _onUserInteraction();
+    _arrowHoldTimer = Timer.periodic(_arrowHoldTick, (_) {
+      if (!mounted || _arrowHoldStart == null) return;
+      final held = DateTime.now().difference(_arrowHoldStart!);
+      // Remote safety: if the key-up never reaches us, stop instead of
+      // accumulating an unbounded offset forever.
+      if (held >= const Duration(seconds: 20)) {
+        _endArrowHold();
+        return;
+      }
+      setState(() {
+        _arrowAccumulatedSeconds +=
+            _arrowHoldDirection * gestureSeekStepForHold(held);
+      });
+    });
+    setState(() {});
+  }
+
+  Duration? get _arrowSeekTarget {
+    final base = _arrowHoldBasePos;
+    if (base == null) return null;
+    return _clampToDuration(
+      base + Duration(seconds: _arrowAccumulatedSeconds),
+    );
+  }
+
+  /// Commits the accumulated offset. Safe to call twice: the desktop/global
+  /// key paths both see the same key-up event.
+  void _endArrowHold() {
+    if (_arrowHoldTimer == null) return;
+    final base = _arrowHoldBasePos;
+    final offset = _arrowAccumulatedSeconds;
+    _discardArrowHold();
+    if (base == null || offset == 0) {
+      if (mounted) setState(() {});
+      return;
+    }
+    _lastSeekAt = DateTime.now();
+    if (mounted) setState(() {});
+    unawaited(
+      _player.seekTo(_clampToDuration(base + Duration(seconds: offset))),
+    );
+  }
+
+  void _discardArrowHold() {
+    _arrowHoldTimer?.cancel();
+    _arrowHoldTimer = null;
+    _arrowHoldStart = null;
+    _arrowHoldBasePos = null;
+    _arrowAccumulatedSeconds = 0;
+    _arrowHoldDirection = 0;
+  }
+
   KeyEventResult _handlePlayerKey(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) {
+      if ((event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+              event.logicalKey == LogicalKeyboardKey.arrowRight) &&
+          _arrowHoldTimer != null) {
+        _endArrowHold();
+        return KeyEventResult.handled;
+      }
+      // Not our hold (e.g. scrolling the episode panel): let it through.
+      return KeyEventResult.ignored;
+    }
+    // The one-shot key below starts the hold; the timer (not the repeat rate)
+    // drives the acceleration, so repeats are consumed without extra seeks.
+    if (event is KeyRepeatEvent) {
+      if ((event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+              event.logicalKey == LogicalKeyboardKey.arrowRight) &&
+          _arrowHoldTimer != null) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.arrowLeft) {
-      _seekBy(-10);
+      _beginArrowHold(-1, 10);
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowRight) {
-      _seekBy(10);
+      _beginArrowHold(1, 10);
       return KeyEventResult.handled;
     }
+    // Any other key means the hold is over; commit before acting on it.
+    _endArrowHold();
     if (key == LogicalKeyboardKey.mediaRewind) {
       _seekBy(-30);
       return KeyEventResult.handled;
@@ -890,6 +996,18 @@ class _TvPlayerScreenState extends ConsumerState<TvPlayerScreen>
                     ),
                   ),
                 ),
+                // Held D-pad preview: the video only seeks on release, so show
+                // where the jump will land.
+                if (_arrowHoldTimer != null &&
+                    !_loading &&
+                    _exoState.duration > Duration.zero)
+                  PlayerGestureHud(
+                    visible: true,
+                    kind: PlayerGestureHudKind.seek,
+                    seekSeconds: _arrowAccumulatedSeconds,
+                    seekTarget: _arrowSeekTarget,
+                    seekDuration: _exoState.duration,
+                  ),
                 if (_showChrome && !_loading)
                   ValueListenableBuilder<bool>(
                     valueListenable: _episodeListOpenNotifier,
