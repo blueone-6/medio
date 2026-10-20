@@ -132,6 +132,22 @@ class SettingsService {
   Future<void> setAutoPlayNext(bool v) =>
       _storage.setBool(StorageKeys.autoPlayNext, v);
 
+  /// Windows: 把 TrueHD/EAC3/DTS 等压缩音频源码送到 AVR/回音壁（Atmos/DTS:X）。
+  /// 默认关；开启后走 WASAPI 独占模式，其他应用可能没有声音。
+  bool get audioPassthrough =>
+      _storage.getBool(StorageKeys.audioPassthrough) ?? false;
+
+  Future<void> setAudioPassthrough(bool v) =>
+      _storage.setBool(StorageKeys.audioPassthrough, v);
+
+  /// Windows: 用 FFmpeg `libplacebo` 处理 DV RPU（P5 正常色的关键）。
+  /// 默认开；关闭后只剥离 DV 元数据，P5 仍可能偏色。
+  bool get dolbyVisionLibplacebo =>
+      _storage.getBool(StorageKeys.dolbyVisionLibplacebo) ?? true;
+
+  Future<void> setDolbyVisionLibplacebo(bool v) =>
+      _storage.setBool(StorageKeys.dolbyVisionLibplacebo, v);
+
   /// 画面缩放模式（Android 手机 ExoPlayer）：适应 / 裁剪铺满 / 拉伸填满。
   /// 默认「裁剪铺满」（等比例放大铺满，见 `VideoFitMode.fromName`）；未设置或
   /// 已废弃的名字也回落到它。竖屏自动回退「适应」（见 `effectiveVideoFitMode`）。

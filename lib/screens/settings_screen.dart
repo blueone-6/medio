@@ -116,6 +116,10 @@ class SettingsScreen extends ConsumerWidget {
             _RecentAddedWindowTile(settings: settings, ref: ref),
             _SubtitleFontSizeTile(settings: settings),
             _NetdiskCacheTile(settings: settings, type: context.deviceType),
+            if (isWindowsPlatform) ...[
+              _AudioPassthroughTile(settings: settings),
+              _DolbyVisionLibplaceboTile(settings: settings),
+            ],
           ],
         ),
         SettingsListGroup(
@@ -540,6 +544,147 @@ class _SubtitleFontSizeTileState extends State<_SubtitleFontSizeTile> {
                       color: Theme.of(context).colorScheme.outline,
                       fontSize: 12)),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Windows 音频直通（Atmos / DTS:X）开关。
+///
+/// 开启后 mpv 用 WASAPI 独占 + `audio-spdif` 把 TrueHD/EAC3/DTS 源码送到
+/// HDMI 上的 AVR/回音壁；需要把功放/回音壁设为系统默认输出。开启期间其他
+/// 应用可能没有声音（独占设备）。
+class _AudioPassthroughTile extends StatefulWidget {
+  const _AudioPassthroughTile({required this.settings});
+
+  final SettingsService settings;
+
+  @override
+  State<_AudioPassthroughTile> createState() => _AudioPassthroughTileState();
+}
+
+class _AudioPassthroughTileState extends State<_AudioPassthroughTile> {
+  late bool _enabled;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.settings.audioPassthrough;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.md,
+        AppSpacing.lg,
+        AppSpacing.md,
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.surround_sound_outlined,
+              size: 22, color: cs.onSurfaceVariant),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '音频直通（Atmos / DTS:X）',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                Text(
+                  _enabled
+                      ? '已开启：源码送到功放，需把 HDMI 功放设为系统默认输出'
+                      : '关闭：在本机解码为 PCM（不支持 Atmos 对象声）',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: _enabled,
+            onChanged: (v) async {
+              setState(() => _enabled = v);
+              await widget.settings.setAudioPassthrough(v);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Windows Dolby Vision P5 兼容渲染（FFmpeg libplacebo）。
+///
+/// 当前 media_kit 的 Windows 纹理路径不处理 DV RPU，P5 会发紫/发绿。
+/// 开启后把 FFmpeg `libplacebo` 滤镜挂到 mpv 的 vf 链上，先应用 RPU 并
+/// tone-map 到 BT.709，再交给现有渲染器。关闭只剥离 DV 元数据，P5 仍偏色。
+class _DolbyVisionLibplaceboTile extends StatefulWidget {
+  const _DolbyVisionLibplaceboTile({required this.settings});
+
+  final SettingsService settings;
+
+  @override
+  State<_DolbyVisionLibplaceboTile> createState() =>
+      _DolbyVisionLibplaceboTileState();
+}
+
+class _DolbyVisionLibplaceboTileState
+    extends State<_DolbyVisionLibplaceboTile> {
+  late bool _enabled;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.settings.dolbyVisionLibplacebo;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.md,
+        AppSpacing.lg,
+        AppSpacing.md,
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.hdr_on_outlined, size: 22, color: cs.onSurfaceVariant),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '杜比视界 P5 兼容渲染',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                Text(
+                  _enabled
+                      ? '已开启：libplacebo 处理 DV 元数据并转 SDR（4K 下略吃 GPU）'
+                      : '已关闭：只剥离 DV 元数据，P5 仍会偏紫/偏绿',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: _enabled,
+            onChanged: (v) async {
+              setState(() => _enabled = v);
+              await widget.settings.setDolbyVisionLibplacebo(v);
+            },
           ),
         ],
       ),

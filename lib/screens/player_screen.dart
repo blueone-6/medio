@@ -35,6 +35,7 @@ import '../core/player/android_video_output_ready.dart';
 import '../core/player/player_home_refresh.dart';
 import '../core/player/player_video_controller_config.dart';
 import '../core/player/player_audio_speed.dart';
+import '../core/player/dolby_playback.dart';
 import '../core/player/player_volume_memory.dart';
 import '../core/player/prefetch_suspend.dart';
 import '../core/player/player_subtitle_delay.dart';
@@ -1567,6 +1568,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
       _currentItem = item;
 
+      // Dolby: Windows audio passthrough + DV metadata-strip compat. Must run
+      // before Player.open so mpv starts the audio output with these options.
+      await _applyDolbyPlaybackOptions(item);
+      if (!mounted || _bootstrapCancelled) return;
+
       // Resolve external CDN in parallel with surface setup; consumed synchronously at
       // mpv_open so the URL stays fresh (unlike early parallel + late open).
       Future<String>? strmCdnFuture;
@@ -1985,6 +1991,45 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     } catch (e, st) {
       AppLog.instance.w('Subtitle', 'setSubtitleDelay failed', e);
       AppLog.instance.e('Subtitle', 'delay error', error: e, stackTrace: st);
+    }
+  }
+
+  /// Windows 杜比播放选项：音频源码直通 + DV 元数据剥离。
+  ///
+  /// 必须在 `Player.open` 之前调用：`audio-spdif` / `ao` 需要音频输出初始化
+  /// 时生效；`vf` 需要文件打开前挂到滤镜链上。失败只记日志，不阻断播放。
+  Future<void> _applyDolbyPlaybackOptions(EmbyMediaItem item) async {
+    final settings = ref.read(settingsServiceProvider);
+    final audioProps = dolbyAudioPassthroughProperties(
+      windows: isWindowsPlatform,
+      enabled: settings.audioPassthrough,
+    );
+    for (final entry in audioProps.entries) {
+      try {
+        await _player.setMpvProperty(entry.key, entry.value);
+      } catch (e) {
+        AppLog.instance.w('Player', 'dolby audio ${entry.key} failed: $e');
+      }
+    }
+    if (audioProps.isNotEmpty) {
+      AppLog.instance.i(
+        'Player',
+        'audio passthrough enabled: ${audioProps['audio-spdif']}',
+      );
+    }
+
+    final vf = dolbyVisionVideoFilter(
+      windows: isWindowsPlatform,
+      isDolbyVision: item.isDolbyVision,
+      useLibplacebo: settings.dolbyVisionLibplacebo,
+    );
+    if (vf != null) {
+      try {
+        await _player.setMpvProperty('vf', vf);
+        AppLog.instance.i('Player', 'DV compat filter: $vf');
+      } catch (e) {
+        AppLog.instance.w('Player', 'DV compat filter failed: $e');
+      }
     }
   }
 

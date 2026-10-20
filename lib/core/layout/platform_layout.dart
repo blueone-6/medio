@@ -21,6 +21,10 @@ bool get isDesktopPlatform =>
         defaultTargetPlatform == TargetPlatform.macOS ||
         defaultTargetPlatform == TargetPlatform.linux);
 
+/// 是否 Windows 桌面。Windows 专属播放能力（WASAPI 直通、D3D11 渲染）用它。
+bool get isWindowsPlatform =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+
 const kMobileHorizontalPadding = 16.0;
 const kDesktopHorizontalPadding = 24.0;
 
