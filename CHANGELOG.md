@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Phone subtitle and A/V offsets use a stepper instead of button lists.** The
+  subtitle-sync and audio-sync sections now show the current offset in the
+  middle with two buttons on each side: a fine ±0.1 s and a coarse ±0.5 s step.
+  Tapping the centred value resets it to zero, so the separate "重置同步" row is
+  gone; steps outside the supported range (and "提前" for embedded/bitmap
+  subtitles) are disabled instead of silently doing nothing.
+- **Desktop/Windows offsets moved into the subtitle and audio menus.** The wide
+  control bar's subtitle/audio buttons now open the same centered sheet as the
+  touch layout instead of a small dropdown, so long labels no longer truncate;
+  the subtitle sheet ends with a 字幕同步 stepper and the audio sheet with a
+  per-source 音画同步 stepper. The stepper is a tighter centered cluster (value
+  in a pill) so the row no longer looks empty, and tapping the value resets it.
+  The audio button stays visible even for single-track files, since its sheet is
+  also where the A/V offset lives.
+
 ## [1.3.0] - 2026-10-20
 
 ### Added

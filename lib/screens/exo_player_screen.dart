@@ -25,6 +25,7 @@ import '../core/player/player_home_refresh.dart';
 import '../core/player/player_volume_memory.dart';
 import '../core/player/reopen_backoff.dart';
 import '../core/player/seek_step.dart';
+import '../core/player/subtitle_offset.dart';
 import '../core/player/tv_exo/tv_exo_video_view.dart';
 import '../core/theme/app_colors.dart';
 import '../core/tv/tv_remote_actions.dart' show TvRemoteActions;
@@ -782,8 +783,7 @@ class _ExoPlayerScreenState extends ConsumerState<ExoPlayerScreen>
 
   void _adjustSubtitleDelay(int deltaMs) {
     final settings = ref.read(settingsServiceProvider);
-    final next =
-        (settings.subtitleOffsetMs + deltaMs).clamp(-30000, 30000).toInt();
+    final next = clampSubtitleOffsetMs(settings.subtitleOffsetMs + deltaMs);
     setState(() => _subtitleOffsetMs = next);
     unawaited(settings.setSubtitleOffsetMs(next));
     // Muxed (native) subs only support ≈0 in ExoPlayer; the bridge clamps.

@@ -12,6 +12,7 @@ class PlayerMenuRow {
     this.onTap,
     this.children,
     this.sectionTitle,
+    this.custom,
   });
 
   /// Required for regular rows; omitted when [sectionTitle] is set.
@@ -21,6 +22,13 @@ class PlayerMenuRow {
   final VoidCallback? onTap;
   final List<PlayerMenuRow>? children;
   final String? sectionTitle;
+
+  /// Replaces the standard label/value layout with an interactive control.
+  ///
+  /// The sheet gives it a [PlayerMenuSheet.rowHeight] tall slot and the widget
+  /// owns its horizontal padding, so controls such as the A/V offset stepper
+  /// can put buttons on both sides of a centered value.
+  final Widget? custom;
 }
 
 class _PlayerMenuPage {
@@ -253,6 +261,13 @@ class _PlayerMenuSheetState extends State<PlayerMenuSheet> {
             letterSpacing: 0.2,
           ),
         ),
+      );
+    }
+
+    if (row.custom != null) {
+      return SizedBox(
+        height: PlayerMenuSheet.rowHeight,
+        child: row.custom,
       );
     }
 

@@ -6,9 +6,11 @@ import 'package:flutter/material.dart';
 import '../../core/player/exo/exo_track_selection.dart';
 import '../../core/player/exo/video_fit_mode.dart';
 import '../../core/player/player_av_sync.dart';
+import '../../core/player/subtitle_offset.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radius.dart';
 import '../../models/emby/emby_subtitle_option.dart';
+import 'offset_stepper.dart';
 import 'player_menu_sheet.dart';
 
 /// Bottom playback bar for the ExoPlayer phone screen.
@@ -169,12 +171,6 @@ class _ExoPlayerControlsState extends State<ExoPlayerControls> {
     return '$h:$m:$s';
   }
 
-  static String _fmtOffset(int ms) {
-    final seconds = ms / 1000.0;
-    final fixed = seconds.abs().toStringAsFixed(1);
-    return seconds == 0 ? '0.0s' : '${seconds > 0 ? '+' : '-'}${fixed}s';
-  }
-
   // ── transport ──
 
   void _playPause() {
@@ -312,20 +308,20 @@ class _ExoPlayerControlsState extends State<ExoPlayerControls> {
           onTap: () => select(ExoSubtitleExternal(o)),
         ),
       PlayerMenuRow(
-        sectionTitle: '字幕同步（当前 ${_fmtOffset(widget.readSubtitleOffsetMs())}）',
+        sectionTitle:
+            nativeActive ? '字幕同步 · 内嵌/位图仅支持延后' : '字幕同步',
       ),
       PlayerMenuRow(
-        label: '提前 0.5s',
-        value: nativeActive ? '位图/内嵌仅支持延后' : null,
-        onTap: () => adjust(-500),
-      ),
-      PlayerMenuRow(
-        label: '延后 0.5s',
-        onTap: () => adjust(500),
-      ),
-      PlayerMenuRow(
-        label: '重置同步',
-        onTap: reset,
+        custom: OffsetStepper(
+          valueMs: widget.readSubtitleOffsetMs(),
+          zeroLabel: '无偏移',
+          // Native-rendered cues can only be shown later, so never offer a
+          // step that the engine would silently ignore.
+          minMs: nativeActive ? 0 : -subtitleOffsetLimitMs,
+          maxMs: subtitleOffsetLimitMs,
+          onAdjust: adjust,
+          onReset: reset,
+        ),
       ),
     ];
     return rows;
@@ -376,32 +372,20 @@ class _ExoPlayerControlsState extends State<ExoPlayerControls> {
         ),
       // 恒定偏移补偿：个别软解片源（现场实测一部 EAC3 remux 约 1 s）需要手动
       // 校准；按片源记忆，未记录过的片源一律 0。
-      PlayerMenuRow(
-        sectionTitle:
-            '音画同步 · 按片源记忆（${describeAudioDelay(widget.readAudioDelayMs())}）',
+      const PlayerMenuRow(
+        sectionTitle: '音画同步 · 按片源记忆',
       ),
       PlayerMenuRow(
-        label: '声音延后 0.1s',
-        onTap: () => adjustAudioDelay(audioDelayStepMs),
-      ),
-      PlayerMenuRow(
-        label: '声音提前 0.1s',
-        onTap: () => adjustAudioDelay(-audioDelayStepMs),
-      ),
-      PlayerMenuRow(
-        label: '声音延后 0.5s',
-        onTap: () => adjustAudioDelay(500),
-      ),
-      PlayerMenuRow(
-        label: '声音提前 0.5s',
-        onTap: () => adjustAudioDelay(-500),
-      ),
-      PlayerMenuRow(
-        label: '重置同步',
-        onTap: () {
-          widget.onResetAudioDelay();
-          refresh();
-        },
+        custom: OffsetStepper(
+          valueMs: widget.readAudioDelayMs(),
+          minMs: audioDelayMinMs,
+          maxMs: audioDelayMaxMs,
+          onAdjust: adjustAudioDelay,
+          onReset: () {
+            widget.onResetAudioDelay();
+            refresh();
+          },
+        ),
       ),
     ];
   }

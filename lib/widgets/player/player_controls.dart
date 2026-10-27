@@ -16,11 +16,13 @@ import '../../core/player/player_subtitle_visibility.dart';
 import '../../core/player/select_embedded_subtitle.dart';
 import '../../core/player/emby_subtitle_match.dart';
 import '../../core/player/subtitle_emby_index.dart';
+import '../../core/player/subtitle_offset.dart';
 import '../../core/player/subtitle_switch_queue.dart';
 import '../../core/player/subtitle_track_kind.dart';
 import '../../core/player/player_subtitle_delay.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_radius.dart';
+import 'offset_stepper.dart';
 import 'player_menu_sheet.dart';
 
 import '../../models/emby/emby_subtitle_option.dart';
@@ -100,7 +102,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   String? _pendingEmbySubtitleId;
   bool _autoSubtitleActive = false;
   /// mpv `audio-delay` (seconds) for the current media; refreshed from mpv when
-  /// the menu opens. Persisted per item by [PlayerControls._adjustAudioDelay],
+  /// the menu opens. Persisted per item by [PlayerControls._applyAudioDelayMs],
   /// applied by the player screen whenever a source is opened.
   double _audioDelaySeconds = 0;
   /// Set once the user has picked a subtitle from the menu. After that the
@@ -539,12 +541,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     String s = r.toStringAsFixed(2);
     s = s.replaceFirst(RegExp(r'\.?0+$'), '');
     return '${s}x';
-  }
-
-  static String _fmtOffset(int ms) {
-    final abs = ms.abs();
-    final sec = (abs / 1000).toStringAsFixed(1);
-    return ms >= 0 ? '+$sec s' : '-$sec s';
   }
 
   // ── Seek / Volume actions ──
@@ -1018,20 +1014,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     }
   }
 
-  static Widget _menuSectionLabel(String text) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Color(0x99FFFFFF),
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-
   Future<void> _pickRate(double r) async {
     _notify();
     await _player.setRate(r);
@@ -1154,116 +1136,23 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
       );
     }
 
-    final emby = widget.embySubtitles;
-    final nativeMuxed = _nativeMuxedTracks(tracks, emby);
-    final embeddedEmby = uniqueEmbeddedEmbySubtitles(emby);
-    final externalEmby = externalEmbySubtitles(emby);
-    final showAuto = _showAutoEmbedded(emby, nativeMuxed);
-    final indexTracks = _embyIndexTracks ?? const {};
-    final fallbackTracks = fallbackEmbyIndexTrackMap(tracks, emby);
-
-    return Theme(
-      data: _popupTheme(context),
-      child: PopupMenuButton<Object>(
-        tooltip: switching ? '字幕切换中…' : '字幕',
-        enabled: !switching,
-        color: _popupBg,
-        surfaceTintColor: Colors.transparent,
-        shadowColor: Colors.black54,
-        elevation: 10,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        onOpened: () {
-          if (_subtitleSwitching) return;
-          _notify();
-          unawaited(_refreshEmbyTrackMap());
-        },
-        itemBuilder: (ctx) {
-          if (_subtitleSwitching) {
-            return [
-              PopupMenuItem<Object>(
-                enabled: false,
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: _foreground.withValues(alpha: 0.7),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    const Text('字幕切换中…'),
-                  ],
-                ),
-              ),
-            ];
-          }
-          final items = <PopupMenuEntry<Object>>[];
-          items.add(PopupMenuItem(
-              value: SubtitleTrack.no(),
-              child: _popupRow(
-                selected: currentSub?.id == 'no' &&
-                    !_autoSubtitleActive &&
-                    _activeEmbySubtitleId == null,
-                label: '关闭字幕',
-              )));
-          if (showAuto) {
-            items.add(PopupMenuItem(
-                value: SubtitleTrack.auto(),
-                child:
-                    _popupRow(selected: _autoSubtitleActive, label: '自动（内嵌）')));
-          }
-          if (embeddedEmby.isNotEmpty) {
-            if (items.isNotEmpty) items.add(const PopupMenuDivider(height: 9));
-            items.add(PopupMenuItem<Object>(
-              enabled: false,
-              child: _menuSectionLabel('内嵌（${embeddedEmby.length}）'),
-            ));
-            for (final o in embeddedEmby) {
-              final sel = _autoSubtitleActive
-                  ? false
-                  : _isEmbySubtitleActive(o, currentSub);
-              final native = indexTracks[o.index] ?? fallbackTracks[o.index];
-              items.add(PopupMenuItem(
-                  value: o,
-                  child: _popupRow(
-                    selected: sel,
-                    label: embeddedSubtitleMenuLabel(o, native),
-                    subtitle: native != null &&
-                            o.label != muxedTrackDisplayName(native)
-                        ? o.label
-                        : null,
-                  )));
-            }
-          } else {
-            for (final t in nativeMuxed) {
-              items.add(PopupMenuItem(
-                  value: t,
-                  child: _popupRow(
-                    selected: currentSub == t && _activeEmbySubtitleId == null,
-                    label: _subtitleMenuLabel(t),
-                  )));
-            }
-          }
-          if (externalEmby.isNotEmpty) {
-            if (items.isNotEmpty) items.add(const PopupMenuDivider(height: 9));
-            items.add(PopupMenuItem<Object>(
-              enabled: false,
-              child: _menuSectionLabel('外挂（${externalEmby.length}）'),
-            ));
-            for (final o in externalEmby) {
-              final sel = _autoSubtitleActive
-                  ? false
-                  : _isEmbySubtitleActive(o, currentSub);
-              items.add(PopupMenuItem(
-                  value: o, child: _popupRow(selected: sel, label: o.label)));
-            }
-          }
-          return items;
-        },
-        onSelected: _onSubtitleMenuSelected,
-        child: _subtitleMenuButton(switching: switching),
+    // The desktop bar opens the same centered sheet as the touch layout, so
+    // the subtitle list and the subtitle-offset stepper share one surface.
+    return Tooltip(
+      message: switching ? '字幕切换中…' : '字幕',
+      child: MouseRegion(
+        cursor:
+            switching ? SystemMouseCursors.basic : SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: switching
+              ? null
+              : () {
+                  _notify();
+                  unawaited(_showSubtitlePicker(tracks, currentSub));
+                },
+          child: _subtitleMenuButton(switching: switching),
+        ),
       ),
     );
   }
@@ -1380,158 +1269,71 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
 
   Widget _buildAudioTrackMenu(
       {required Tracks tracks, required AudioTrack? currentAudio}) {
-    final list = tracks.audio;
-    if (list.length <= 1) return const SizedBox.shrink();
-    if (_isDpad) {
-      return TvFocusIconButton(
+    if (!_isDpad) {
+      // Desktop opens the same centered sheet as the touch layout. It stays
+      // available even when the file exposes a single track, because the sheet
+      // also carries the per-source 音画同步 stepper.
+      return _transportBtn(
         icon: Icons.audiotrack_rounded,
-        size: _tvBtnSize,
-        color: _foreground,
-        onActivate: () => _showTvAudioPicker(tracks, currentAudio),
-        onFocusChange: (focused) {
-          if (focused) _notify();
-        },
+        tooltip: '音轨',
+        onPressed: () =>
+            unawaited(_showAudioTrackPicker(tracks, currentAudio)),
       );
     }
-    return Theme(
-      data: _popupTheme(context),
-      child: PopupMenuButton<AudioTrack>(
-        tooltip: '音频',
-        color: _popupBg,
-        surfaceTintColor: Colors.transparent,
-        shadowColor: Colors.black54,
-        elevation: 10,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        onOpened: _notify,
-        itemBuilder: (ctx) => [
-          for (final t in list)
-            PopupMenuItem(
-                value: t,
-                child: _popupRow(
-                    selected: currentAudio == t, label: audioTrackLabel(t))),
-        ],
-        onSelected: (t) async {
-          _notify();
-          await _player.setAudioTrack(t);
-        },
-        child: _iconButton(icon: Icons.audiotrack_rounded),
-      ),
+    final list = tracks.audio;
+    if (list.length <= 1) return const SizedBox.shrink();
+    return TvFocusIconButton(
+      icon: Icons.audiotrack_rounded,
+      size: _tvBtnSize,
+      color: _foreground,
+      onActivate: () => _showTvAudioPicker(tracks, currentAudio),
+      onFocusChange: (focused) {
+        if (focused) _notify();
+      },
     );
   }
 
   // ── Subtitle offset ──
 
-  Future<void> _adjustSubDelay(int deltaMs) async {
-    _notify();
+  /// Applies an absolute subtitle offset (ms), clamped to the shared range.
+  Future<void> _applySubtitleOffsetMs(int ms) async {
+    final n = clampSubtitleOffsetMs(ms);
     final settings = ref.read(settingsServiceProvider);
-    final n = settings.subtitleOffsetMs + deltaMs;
     try {
       await settings.setSubtitleOffsetMs(n);
       await _player.setSubtitleDelay(Duration(milliseconds: n));
     } catch (e, st) {
       AppLog.instance.e(
         'PlayerControls',
-        'adjustSubDelay failed deltaMs=$deltaMs',
+        'applySubtitleOffset failed ms=$ms',
         error: e,
         stackTrace: st,
       );
     }
   }
 
-  void _showSubtitleOffsetDialog() {
+  Future<void> _adjustSubDelay(int deltaMs) async {
     _notify();
     final settings = ref.read(settingsServiceProvider);
-    var cur = settings.subtitleOffsetMs;
-    showDialog<void>(
-        context: context,
-        builder: (ctx) {
-          var dialogAlive = true;
-          return StatefulBuilder(builder: (ctx, setDiag) {
-            void safeSetDiag(VoidCallback fn) {
-              if (dialogAlive && ctx.mounted) setDiag(fn);
-            }
-
-            final accent = _playerAccent(ctx);
-            return AlertDialog(
-              backgroundColor: _popupBg,
-              title: const Text('字幕偏移',
-                  style: TextStyle(color: _foreground, fontSize: 16)),
-              content: SizedBox(
-                  width: 320,
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    Text(_fmtOffset(cur),
-                        style: const TextStyle(
-                            color: _foreground,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 16),
-                    Slider(
-                        value: cur.toDouble(),
-                        min: -5000,
-                        max: 5000,
-                        divisions: 100,
-                        label: _fmtOffset(cur),
-                        activeColor: accent,
-                        onChanged: (v) => safeSetDiag(() => cur = v.round()),
-                        onChangeEnd: (v) async {
-                          final r = v.round();
-                          await settings.setSubtitleOffsetMs(r);
-                          try {
-                            await _player
-                                .setSubtitleDelay(Duration(milliseconds: r));
-                          } catch (_) {}
-                        }),
-                    const SizedBox(height: 8),
-                    Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          TextButton(
-                              onPressed: () async {
-                                safeSetDiag(() => cur = 0);
-                                await settings.setSubtitleOffsetMs(0);
-                                try {
-                                  await _player.setSubtitleDelay(Duration.zero);
-                                } catch (_) {}
-                              },
-                              child: const Text('重置',
-                                  style: TextStyle(color: _foregroundDim))),
-                          Text('范围: -5.0s ~ +5.0s',
-                              style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.4),
-                                  fontSize: 12)),
-                        ]),
-                  ])),
-              actions: [
-                TextButton(
-                    onPressed: () {
-                      dialogAlive = false;
-                      Navigator.of(ctx).pop();
-                    },
-                    child:
-                        const Text('完成', style: TextStyle(color: _foreground)))
-              ],
-            );
-          });
-        });
+    await _applySubtitleOffsetMs(settings.subtitleOffsetMs + deltaMs);
   }
 
   /// 音画同步（音频延迟），正 = 声音延后；mpv `audio-delay` 直接改音频时间轴。
   /// **按片源记忆**：值写进 `itemId` 的存储，换片时由 `player_screen` 应用各自的值。
-  Future<void> _adjustAudioDelay(int deltaMs) async {
-    _notify();
-    await _refreshAudioDelayFromMpv();
-    final nextSecs =
-        clampAudioDelayMs((_audioDelaySeconds * 1000).round() + deltaMs);
+  Future<void> _applyAudioDelayMs(int ms) async {
+    final next = clampAudioDelayMs(ms);
+    // Keep the in-memory value in step synchronously so the menu can repaint
+    // immediately, before mpv answers.
+    _audioDelaySeconds = next / 1000.0;
     try {
-      _audioDelaySeconds = nextSecs / 1000.0;
-      await _player.setMpvProperty('audio-delay', mpvAudioDelaySeconds(nextSecs));
+      await _player.setMpvProperty('audio-delay', mpvAudioDelaySeconds(next));
       await ref
           .read(settingsServiceProvider)
-          .setAudioDelayMsFor(widget.itemId, nextSecs);
+          .setAudioDelayMsFor(widget.itemId, next);
     } catch (e, st) {
       AppLog.instance.e(
         'PlayerControls',
-        'adjustAudioDelay failed deltaMs=$deltaMs',
+        'applyAudioDelay failed ms=$ms',
         error: e,
         stackTrace: st,
       );
@@ -1542,93 +1344,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   Future<void> _refreshAudioDelayFromMpv() async {
     final raw = await _player.getMpvProperty('audio-delay');
     _audioDelaySeconds = double.tryParse(raw ?? '') ?? 0;
-  }
-
-  void _showAudioDelayDialog() {
-    _notify();
-    unawaited(() async {
-      await _refreshAudioDelayFromMpv();
-      if (!mounted) return;
-      var cur = (_audioDelaySeconds * 1000).round();
-      showDialog<void>(
-        context: context,
-        builder: (ctx) {
-          var dialogAlive = true;
-          return StatefulBuilder(builder: (ctx, setDiag) {
-            void safeSetDiag(VoidCallback fn) {
-              if (dialogAlive && ctx.mounted) setDiag(fn);
-            }
-
-            final accent = _playerAccent(ctx);
-            return AlertDialog(
-              backgroundColor: _popupBg,
-              title: const Text('音画同步',
-                  style: TextStyle(color: _foreground, fontSize: 16)),
-              content: SizedBox(
-                  width: 320,
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    Text(describeAudioDelay(cur),
-                        style: const TextStyle(
-                            color: _foreground,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 16),
-                    Slider(
-                        value: cur.toDouble(),
-                        min: audioDelayMinMs.toDouble(),
-                        max: audioDelayMaxMs.toDouble(),
-                        divisions: 40,
-                        label: formatAudioDelayMs(cur),
-                        activeColor: accent,
-                        onChanged: (v) => safeSetDiag(() => cur = v.round()),
-                        onChangeEnd: (v) async {
-                          final r = clampAudioDelayMs(v.round());
-                          _audioDelaySeconds = r / 1000.0;
-                          try {
-                            await _player.setMpvProperty(
-                                'audio-delay', mpvAudioDelaySeconds(r));
-                            await ref
-                                .read(settingsServiceProvider)
-                                .setAudioDelayMsFor(widget.itemId, r);
-                          } catch (_) {}
-                        }),
-                    const SizedBox(height: 8),
-                    Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          TextButton(
-                              onPressed: () async {
-                                safeSetDiag(() => cur = 0);
-                                _audioDelaySeconds = 0;
-                                try {
-                                  await _player.setMpvProperty(
-                                      'audio-delay', mpvAudioDelaySeconds(0));
-                                  await ref
-                                      .read(settingsServiceProvider)
-                                      .setAudioDelayMsFor(widget.itemId, 0);
-                                } catch (_) {}
-                              },
-                              child: const Text('重置',
-                                  style: TextStyle(color: _foregroundDim))),
-                          Text('声音比画面快 → 向「延后」方向调',
-                              style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.4),
-                                  fontSize: 12)),
-                        ]),
-                  ])),
-              actions: [
-                TextButton(
-                    onPressed: () {
-                      dialogAlive = false;
-                      Navigator.of(ctx).pop();
-                    },
-                    child:
-                        const Text('完成', style: TextStyle(color: _foreground)))
-              ],
-            );
-          });
-        });
-    }());
   }
 
   // ── Reusable icon buttons ──
@@ -1675,7 +1390,8 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
   }
 
   /// Unified "more" menu — a centered sheet in the subtitle-panel style.
-  /// Each row (倍速 / 音轨 / 字幕 / 字幕偏移) pushes a nested page to adjust.
+  /// 倍速 / 音轨 / 字幕 push nested pages; the two offset steppers stay on the
+  /// root page so their values repaint while they are being tapped.
   Future<void> _showMoreMenu(
     Tracks tracks,
     SubtitleTrack? currentSub,
@@ -1687,7 +1403,6 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     await _refreshAudioDelayFromMpv();
 
     final settings = ref.read(settingsServiceProvider);
-    final offset = settings.subtitleOffsetMs;
     final subLabel = _activeSubtitleMenuLabel(currentSub);
     final audioLabel =
         currentAudio == null ? '默认' : audioTrackLabel(currentAudio);
@@ -1720,62 +1435,7 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
             ),
         ];
         final avDelay = (_audioDelaySeconds * 1000).round();
-        final avDelayRows = [
-          PlayerMenuRow(label: '当前', value: describeAudioDelay(avDelay)),
-          PlayerMenuRow(
-            label: '声音延后 0.1s',
-            onTap: () {
-              unawaited(_adjustAudioDelay(100));
-              refresh();
-            },
-          ),
-          PlayerMenuRow(
-            label: '声音提前 0.1s',
-            onTap: () {
-              unawaited(_adjustAudioDelay(-100));
-              refresh();
-            },
-          ),
-          PlayerMenuRow(
-            label: '重置同步',
-            onTap: () {
-              unawaited(_adjustAudioDelay(-avDelay));
-              refresh();
-            },
-          ),
-          PlayerMenuRow(
-            label: '精确调节',
-            onTap: () {
-              popSheet();
-              _showAudioDelayDialog();
-            },
-          ),
-        ];
         final subRows = _buildSubtitleMenuRows(tracks, currentSub, popSheet);
-        final offsetRows = [
-          PlayerMenuRow(label: '当前偏移', value: _fmtOffset(offset)),
-          PlayerMenuRow(
-            label: '提前 0.1s',
-            onTap: () {
-              unawaited(_adjustSubDelay(-100));
-              refresh();
-            },
-          ),
-          PlayerMenuRow(
-            label: '延后 0.1s',
-            onTap: () {
-              unawaited(_adjustSubDelay(100));
-              refresh();
-            },
-          ),
-          PlayerMenuRow(
-            label: '精确调节',
-            onTap: () {
-              popSheet();
-              _showSubtitleOffsetDialog();
-            },
-          ),
-        ];
         return [
           PlayerMenuRow(
               label: '倍速', value: _fmtRate(rate), children: rateRows),
@@ -1783,12 +1443,43 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
               label: '音轨', value: audioLabel, children: audioRows),
           PlayerMenuRow(
               label: '字幕', value: subLabel, children: subRows),
+          // Offsets live on the root page (not a nested page): the sheet only
+          // refreshes root rows on rebuild, so a stepper one level down would
+          // keep showing the value it was pushed with.
+          const PlayerMenuRow(sectionTitle: '字幕同步'),
           PlayerMenuRow(
-              label: '字幕偏移', value: _fmtOffset(offset), children: offsetRows),
+            custom: OffsetStepper(
+              valueMs: settings.subtitleOffsetMs,
+              minMs: -subtitleOffsetLimitMs,
+              maxMs: subtitleOffsetLimitMs,
+              zeroLabel: '无偏移',
+              onAdjust: (deltaMs) {
+                unawaited(_adjustSubDelay(deltaMs));
+                refresh();
+              },
+              onReset: () {
+                unawaited(_applySubtitleOffsetMs(0));
+                refresh();
+              },
+            ),
+          ),
+          const PlayerMenuRow(sectionTitle: '音画同步 · 按片源记忆'),
           PlayerMenuRow(
-              label: '音画同步',
-              value: describeAudioDelay(avDelay),
-              children: avDelayRows),
+            custom: OffsetStepper(
+              valueMs: avDelay,
+              minMs: audioDelayMinMs,
+              maxMs: audioDelayMaxMs,
+              onAdjust: (deltaMs) {
+                unawaited(_applyAudioDelayMs(
+                    (_audioDelaySeconds * 1000).round() + deltaMs));
+                refresh();
+              },
+              onReset: () {
+                unawaited(_applyAudioDelayMs(0));
+                refresh();
+              },
+            ),
+          ),
         ];
       },
     );
@@ -1828,24 +1519,50 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     );
   }
 
-  void _showAudioTrackPicker(Tracks tracks, AudioTrack? currentAudio) {
+  Future<void> _showAudioTrackPicker(
+    Tracks tracks,
+    AudioTrack? currentAudio,
+  ) async {
     _notify();
-    _showPlayerMenuSheet(
+    await _refreshAudioDelayFromMpv();
+    return _showPlayerMenuSheet(
       title: '音轨',
       showCount: true,
-      rowsBuilder: (popSheet, refresh) => [
-        for (final a
-            in tracks.audio.where((t) => t.id != 'auto' && t.id != 'no'))
+      rowsBuilder: (popSheet, refresh) {
+        final avDelay = (_audioDelaySeconds * 1000).round();
+        return [
+          for (final a
+              in tracks.audio.where((t) => t.id != 'auto' && t.id != 'no'))
+            PlayerMenuRow(
+              label: audioTrackLabel(a),
+              selected: currentAudio?.id == a.id,
+              onTap: () {
+                _notify();
+                unawaited(_player.setAudioTrack(a));
+                popSheet();
+              },
+            ),
+          // The A/V offset belongs next to the tracks: this is where users look
+          // when the sound does not match the picture.
+          const PlayerMenuRow(sectionTitle: '音画同步 · 按片源记忆'),
           PlayerMenuRow(
-            label: audioTrackLabel(a),
-            selected: currentAudio?.id == a.id,
-            onTap: () {
-              _notify();
-              unawaited(_player.setAudioTrack(a));
-              popSheet();
-            },
+            custom: OffsetStepper(
+              valueMs: avDelay,
+              minMs: audioDelayMinMs,
+              maxMs: audioDelayMaxMs,
+              onAdjust: (deltaMs) {
+                unawaited(_applyAudioDelayMs(
+                    (_audioDelaySeconds * 1000).round() + deltaMs));
+                refresh();
+              },
+              onReset: () {
+                unawaited(_applyAudioDelayMs(0));
+                refresh();
+              },
+            ),
           ),
-      ],
+        ];
+      },
     );
   }
 
@@ -1874,7 +1591,8 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
           builder: (context, setSheetState) {
             final rows = rowsBuilder(popSheet, () => setSheetState(() {}));
             final count = showCount
-                ? rows.where((r) => r.sectionTitle == null).length
+                ? rows.where((r) => r.sectionTitle == null && r.custom == null)
+                    .length
                 : null;
             return Center(
               child: PlayerMenuSheet(
@@ -1969,12 +1687,36 @@ class _PlayerControlsState extends ConsumerState<PlayerControls> {
     SubtitleTrack? currentSub,
   ) async {
     _notify();
-    await _refreshEmbyTrackMap();
+    // Non-blocking: the ffprobe-backed index refresh can take a moment, and the
+    // sheet already falls back to Emby metadata for its labels. Waiting here
+    // made the button feel dead on desktop.
+    unawaited(_refreshEmbyTrackMap());
+    final settings = ref.read(settingsServiceProvider);
     return _showPlayerMenuSheet(
       title: '字幕',
       showCount: true,
-      rowsBuilder: (popSheet, refresh) =>
-          _buildSubtitleMenuRows(tracks, currentSub, popSheet),
+      rowsBuilder: (popSheet, refresh) => [
+        ..._buildSubtitleMenuRows(tracks, currentSub, popSheet),
+        // Same surface as the track list: pick subtitles and nudge their timing
+        // without leaving the sheet.
+        const PlayerMenuRow(sectionTitle: '字幕同步'),
+        PlayerMenuRow(
+          custom: OffsetStepper(
+            valueMs: settings.subtitleOffsetMs,
+            minMs: -subtitleOffsetLimitMs,
+            maxMs: subtitleOffsetLimitMs,
+            zeroLabel: '无偏移',
+            onAdjust: (deltaMs) {
+              unawaited(_adjustSubDelay(deltaMs));
+              refresh();
+            },
+            onReset: () {
+              unawaited(_applySubtitleOffsetMs(0));
+              refresh();
+            },
+          ),
+        ),
+      ],
     );
   }
 
