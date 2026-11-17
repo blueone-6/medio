@@ -74,6 +74,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         _cancelAutoRetry();
       }
     });
+    _restoreLibrarySelection();
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _finishAppStartupPerf());
   }
@@ -296,6 +297,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _mobileLibraryId = libraryId;
       _libraryBrowseStack.clear();
     });
+    _persistLibraryId(_kMobileLibraryKey, libraryId);
   }
 
   void _onDesktopLibrarySelected(String libraryId) {
@@ -319,6 +321,46 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _desktopSearchInput = '';
       _desktopSearchTerm = '';
     });
+    switch (_desktopNav) {
+      case HomePcNavItem.movies:
+        _persistLibraryId(_kDesktopMovieLibraryKey, libraryId);
+        break;
+      case HomePcNavItem.series:
+        _persistLibraryId(_kDesktopSeriesLibraryKey, libraryId);
+        break;
+      case HomePcNavItem.library:
+        _persistLibraryId(_kDesktopAllLibraryKey, libraryId);
+        break;
+      case HomePcNavItem.home:
+      case HomePcNavItem.settings:
+        break;
+    }
+  }
+
+  // 记住上次选中的媒体库：分类库拆分后（国漫/日番/欧美剧…）重启回到第一个库体验很差
+  static const _kMobileLibraryKey = 'home.mobileLibraryId';
+  static const _kDesktopMovieLibraryKey = 'home.desktopMovieLibraryId';
+  static const _kDesktopSeriesLibraryKey = 'home.desktopSeriesLibraryId';
+  static const _kDesktopAllLibraryKey = 'home.desktopAllLibraryId';
+
+  void _restoreLibrarySelection() {
+    try {
+      final ls = ref.read(localStorageProvider);
+      _mobileLibraryId = ls.getString(_kMobileLibraryKey);
+      _desktopMovieLibraryId = ls.getString(_kDesktopMovieLibraryKey);
+      _desktopSeriesLibraryId = ls.getString(_kDesktopSeriesLibraryKey);
+      _desktopAllLibraryId = ls.getString(_kDesktopAllLibraryKey);
+    } catch (_) {
+      // 存储不可用时忽略，回退到默认库
+    }
+  }
+
+  void _persistLibraryId(String key, String libraryId) {
+    try {
+      ref.read(localStorageProvider).setString(key, libraryId);
+    } catch (_) {
+      // 忽略写失败
+    }
   }
 
   Widget _buildAndroidLibraryTab(BuildContext context, List<EmbyLibrary> libs) {
