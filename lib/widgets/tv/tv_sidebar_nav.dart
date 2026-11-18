@@ -5,15 +5,14 @@ import '../home/home_typography.dart';
 import 'tv_focus_ring.dart';
 import 'tv_home_layout.dart';
 
-enum TvNavItem { home, movies, series, library }
+enum TvNavItem { home, titles, library }
 
 class TvSidebarNav extends StatelessWidget {
   const TvSidebarNav({
     super.key,
     required this.selected,
     required this.onHome,
-    required this.onMovies,
-    required this.onSeries,
+    required this.onTitles,
     required this.onLibrary,
     required this.onSearch,
     required this.onSettings,
@@ -21,8 +20,7 @@ class TvSidebarNav extends StatelessWidget {
 
   final TvNavItem selected;
   final VoidCallback onHome;
-  final VoidCallback onMovies;
-  final VoidCallback onSeries;
+  final VoidCallback onTitles;
   final VoidCallback onLibrary;
   final VoidCallback onSearch;
   final VoidCallback onSettings;
@@ -70,18 +68,11 @@ class TvSidebarNav extends StatelessWidget {
                   onActivate: onHome,
                 ),
                 _TvNavLink(
-                  icon: Icons.movie_outlined,
-                  selectedIcon: Icons.movie,
-                  label: '电影',
-                  selected: selected == TvNavItem.movies,
-                  onActivate: onMovies,
-                ),
-                _TvNavLink(
-                  icon: Icons.tv_outlined,
-                  selectedIcon: Icons.tv,
-                  label: '电视剧',
-                  selected: selected == TvNavItem.series,
-                  onActivate: onSeries,
+                  icon: Icons.local_movies_outlined,
+                  selectedIcon: Icons.local_movies,
+                  label: '影视',
+                  selected: selected == TvNavItem.titles,
+                  onActivate: onTitles,
                 ),
                 _TvNavLink(
                   icon: Icons.video_library_outlined,

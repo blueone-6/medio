@@ -22,7 +22,7 @@ final embyResumeProvider = FutureProvider<List<EmbyMediaItem>>((ref) {
 /// Browses a library folder, or with [includeItemTypes] set applies the same
 /// Emby/Jellyfin query as emby_client `movies.vue` / `tv.vue` (recursive + type filter).
 typedef EmbyLibraryListArg = ({
-  String parentId,
+  String? parentId,
   String? includeItemTypes,
   bool recursive,
   int limit,

@@ -26,6 +26,7 @@ import '../widgets/home/home_pc_search_header.dart';
 import '../widgets/home/home_pc_sidebar.dart';
 import '../widgets/home/home_search_bar.dart';
 import '../widgets/home/recommendation_section.dart';
+import '../widgets/library/media_browse_view.dart';
 import '../widgets/loading_indicator.dart';
 import 'home_android_shell.dart';
 import 'library_screen.dart';
@@ -41,26 +42,18 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   HomePcNavItem _desktopNav = HomePcNavItem.home;
-  String? _mobileLibraryId;
-  String? _desktopMovieLibraryId;
-  String? _desktopSeriesLibraryId;
   String? _desktopAllLibraryId;
   final List<({String id, String name})> _libraryBrowseStack = [];
   Timer? _autoRefreshTimer;
-  Timer? _desktopSearchDebounce;
   Timer? _autoRetryTimer;
   int _autoRetryAttempt = 0;
   static const _maxAutoRetryAttempts = 8;
-  late final FocusNode _desktopSearchFocusNode;
-  String _desktopSearchInput = '';
-  String _desktopSearchTerm = '';
   bool _appStartupPerfFinished = false;
   bool _isRefreshing = false;
 
   @override
   void initState() {
     super.initState();
-    _desktopSearchFocusNode = FocusNode();
     _autoRefreshTimer =
         Timer.periodic(const Duration(minutes: 10), (_) => _onAutoRefresh());
     // Auto-retry library loading when the server is temporarily unreachable
@@ -112,8 +105,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void dispose() {
     _autoRefreshTimer?.cancel();
     _autoRetryTimer?.cancel();
-    _desktopSearchDebounce?.cancel();
-    _desktopSearchFocusNode.dispose();
     super.dispose();
   }
 
@@ -145,18 +136,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ref.read(embyResumeProvider.future),
           ref.read(homeRecommendationProvider.future),
         ]);
+      } else if (_desktopNav == HomePcNavItem.titles && libs.isNotEmpty) {
+        // 影视页自行管理分类/排序，这里只需让列表重新拉取
+        ref.invalidate(embyLibraryItemsProvider);
       } else if (libs.isNotEmpty) {
         final scope = _desktopLibraryScope(libs);
         if (scope.selectedParentId != null || _libraryBrowseStack.isNotEmpty) {
           final browseId = _libraryBrowseStack.isEmpty
               ? scope.selectedParentId!
               : _libraryBrowseStack.last.id;
-          final types = _desktopLibraryTypes();
-          final query = libraryItemsQuery(
-            browseId,
-            types,
-            searchTerm: _desktopSearchTerm,
-          );
+          final query = libraryItemsQuery(browseId, null);
           ref.invalidate(embyLibraryItemsProvider(query));
           await ref.read(embyLibraryItemsProvider(query).future);
         }
@@ -292,63 +281,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  void _onMobileLibrarySelected(String libraryId) {
-    setState(() {
-      _mobileLibraryId = libraryId;
-      _libraryBrowseStack.clear();
-    });
-    _persistLibraryId(_kMobileLibraryKey, libraryId);
-  }
-
   void _onDesktopLibrarySelected(String libraryId) {
     setState(() {
-      switch (_desktopNav) {
-        case HomePcNavItem.movies:
-          _desktopMovieLibraryId = libraryId;
-          break;
-        case HomePcNavItem.series:
-          _desktopSeriesLibraryId = libraryId;
-          break;
-        case HomePcNavItem.library:
-          _desktopAllLibraryId = libraryId;
-          break;
-        case HomePcNavItem.home:
-        case HomePcNavItem.settings:
-          break;
+      if (_desktopNav == HomePcNavItem.library) {
+        _desktopAllLibraryId = libraryId;
       }
       _libraryBrowseStack.clear();
-      _desktopSearchDebounce?.cancel();
-      _desktopSearchInput = '';
-      _desktopSearchTerm = '';
     });
-    switch (_desktopNav) {
-      case HomePcNavItem.movies:
-        _persistLibraryId(_kDesktopMovieLibraryKey, libraryId);
-        break;
-      case HomePcNavItem.series:
-        _persistLibraryId(_kDesktopSeriesLibraryKey, libraryId);
-        break;
-      case HomePcNavItem.library:
-        _persistLibraryId(_kDesktopAllLibraryKey, libraryId);
-        break;
-      case HomePcNavItem.home:
-      case HomePcNavItem.settings:
-        break;
+    if (_desktopNav == HomePcNavItem.library) {
+      _persistLibraryId(_kDesktopAllLibraryKey, libraryId);
     }
   }
 
   // 记住上次选中的媒体库：分类库拆分后（国漫/日番/欧美剧…）重启回到第一个库体验很差
-  static const _kMobileLibraryKey = 'home.mobileLibraryId';
-  static const _kDesktopMovieLibraryKey = 'home.desktopMovieLibraryId';
-  static const _kDesktopSeriesLibraryKey = 'home.desktopSeriesLibraryId';
   static const _kDesktopAllLibraryKey = 'home.desktopAllLibraryId';
 
   void _restoreLibrarySelection() {
     try {
       final ls = ref.read(localStorageProvider);
-      _mobileLibraryId = ls.getString(_kMobileLibraryKey);
-      _desktopMovieLibraryId = ls.getString(_kDesktopMovieLibraryKey);
-      _desktopSeriesLibraryId = ls.getString(_kDesktopSeriesLibraryKey);
       _desktopAllLibraryId = ls.getString(_kDesktopAllLibraryKey);
     } catch (_) {
       // 存储不可用时忽略，回退到默认库
@@ -363,73 +313,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  Widget _buildAndroidLibraryTab(BuildContext context, List<EmbyLibrary> libs) {
-    if (libs.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.all(kMobileHorizontalPadding),
-        child: EmptyStateView(
-          icon: Icons.video_library_outlined,
-          title: '没有可用媒体库',
-          subtitle: '请检查服务器配置或稍后重试',
-          actionLabel: '重试',
-          onAction: () => ref.invalidate(embyLibrariesProvider),
-        ),
-      );
-    }
-    final rootId = normalizeSelectedLibraryId(libs, _mobileLibraryId)!;
-    final browseParentId =
-        _libraryBrowseStack.isEmpty ? rootId : _libraryBrowseStack.last.id;
-    final showLibraryBack = _libraryBrowseStack.isNotEmpty;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-              kMobileHorizontalPadding, 8, kMobileHorizontalPadding, 0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (showLibraryBack)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: _LibraryBackButton(
-                    onPressed: () =>
-                        setState(() => _libraryBrowseStack.removeLast()),
-                  ),
-                ),
-              LibraryRootPicker(
-                libraries: libs,
-                selectedId: rootId,
-                onSelected: _onMobileLibrarySelected,
-                padding: EdgeInsets.only(
-                  top: showLibraryBack ? 8 : 0,
-                  bottom: AppSpacing.sm,
-                ),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: LibraryBrowseBody(
-            parentId: browseParentId,
-            onBrowseIntoFolder: (folder) {
-              setState(() =>
-                  _libraryBrowseStack.add((id: folder.id, name: folder.name)));
-            },
-          ),
-        ),
-      ],
-    );
+  Widget _buildAndroidMediaTab(BuildContext context) {
+    return const MediaBrowseView();
   }
 
   void _onLibraryBack() {
     setState(() {
       if (_libraryBrowseStack.isNotEmpty) {
         _libraryBrowseStack.removeLast();
-        _desktopSearchDebounce?.cancel();
-        _desktopSearchInput = '';
-        _desktopSearchTerm = '';
       } else if (_desktopNav == HomePcNavItem.library) {
         _desktopNav = HomePcNavItem.home;
       }
@@ -440,58 +331,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() {
       _desktopNav = nav;
       _libraryBrowseStack.clear();
-      _desktopSearchDebounce?.cancel();
-      _desktopSearchInput = '';
-      _desktopSearchTerm = '';
     });
-  }
-
-  void _onDesktopSearchChanged(String value) {
-    setState(() => _desktopSearchInput = value);
-    _desktopSearchDebounce?.cancel();
-    _desktopSearchDebounce = Timer(const Duration(milliseconds: 300), () {
-      if (!mounted) return;
-      setState(() => _desktopSearchTerm = _desktopSearchInput.trim());
-    });
-  }
-
-  void _onDesktopSearchSubmitted(String value) {
-    _desktopSearchDebounce?.cancel();
-    setState(() {
-      _desktopSearchInput = value;
-      _desktopSearchTerm = value.trim();
-    });
-  }
-
-  String? _desktopLibraryTypes() {
-    switch (_desktopNav) {
-      case HomePcNavItem.movies:
-        return 'Movie';
-      case HomePcNavItem.series:
-        return 'Series';
-      case HomePcNavItem.home:
-      case HomePcNavItem.library:
-      case HomePcNavItem.settings:
-        return null;
-    }
   }
 
   LibraryScope _desktopLibraryScope(List<EmbyLibrary> libraries) {
     switch (_desktopNav) {
-      case HomePcNavItem.movies:
-        return buildLibraryScope(
-          libraries: libraries,
-          selectedLibraryId: _desktopMovieLibraryId,
-          allLabel: '全部电影',
-          collectionTypes: const {'movies'},
-        );
-      case HomePcNavItem.series:
-        return buildLibraryScope(
-          libraries: libraries,
-          selectedLibraryId: _desktopSeriesLibraryId,
-          allLabel: '全部电视剧',
-          collectionTypes: const {'tvshows'},
-        );
       case HomePcNavItem.library:
         return buildLibraryScope(
           libraries: libraries,
@@ -500,6 +344,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           includeAll: true,
         );
       case HomePcNavItem.home:
+      case HomePcNavItem.titles:
       case HomePcNavItem.settings:
         return buildLibraryScope(
           libraries: libraries,
@@ -551,8 +396,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         return _buildDesktopHomeMain(context, emby, resume, resumeAsync);
       case HomePcNavItem.settings:
         return _buildDesktopSettingsPane();
-      case HomePcNavItem.movies:
-      case HomePcNavItem.series:
+      case HomePcNavItem.titles:
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(
+            HomeLayout.horizontalMargin,
+            HomeLayout.pcSectionGap,
+            HomeLayout.horizontalMargin,
+            0,
+          ),
+          child: _buildDesktopFillPane(
+            child: const MediaBrowseView(),
+          ),
+        );
       case HomePcNavItem.library:
         final scope = _desktopLibraryScope(libraries);
         final browseParentId = _libraryBrowseStack.isEmpty
@@ -561,7 +416,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         return _buildDesktopBrowsePane(
           scope: scope,
           browseParentId: browseParentId,
-          includeItemTypes: _desktopLibraryTypes(),
         );
     }
   }
@@ -638,7 +492,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildDesktopBrowsePane({
     required LibraryScope scope,
     required String browseParentId,
-    required String? includeItemTypes,
   }) {
     final libraries = scope.pickerLibraries;
     if (libraries.isEmpty) {
@@ -660,34 +513,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
     }
 
-    final showSearch = _desktopNav == HomePcNavItem.movies ||
-        _desktopNav == HomePcNavItem.series;
-    final showLibraryBack = _desktopNav == HomePcNavItem.library;
+    final showLibraryBack = _libraryBrowseStack.isNotEmpty;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (showSearch)
-          HomePcSearchHeader(
-            query: _desktopSearchInput,
-            hintText: _desktopNav == HomePcNavItem.movies
-                ? '搜索当前电影...'
-                : '搜索当前电视剧...',
-            onChanged: _onDesktopSearchChanged,
-            onSubmitted: _onDesktopSearchSubmitted,
-            focusNode: _desktopSearchFocusNode,
-          ),
         Align(
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
             constraints:
                 const BoxConstraints(maxWidth: HomeLayout.pcContentMaxWidth),
             child: Padding(
-              padding: EdgeInsets.fromLTRB(
+              padding: const EdgeInsets.fromLTRB(
                 HomeLayout.horizontalMargin,
-                showSearch ? AppSpacing.md : 12,
+                12,
                 HomeLayout.horizontalMargin,
-                showSearch ? AppSpacing.xs : 0,
+                0,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -697,20 +538,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       alignment: Alignment.centerLeft,
                       child: _LibraryBackButton(onPressed: _onLibraryBack),
                     ),
-                  if (showSearch)
-                    LibraryRootChipPicker(
-                      libraries: libraries,
-                      selectedId: scope.selectedId,
-                      onSelected: _onDesktopLibrarySelected,
-                      padding: const EdgeInsets.only(top: 0),
-                    )
-                  else
-                    LibraryRootPicker(
-                      libraries: libraries,
-                      selectedId: scope.selectedId,
-                      onSelected: _onDesktopLibrarySelected,
-                      padding: EdgeInsets.only(top: showLibraryBack ? 8 : 0),
-                    ),
+                  LibraryRootPicker(
+                    libraries: libraries,
+                    selectedId: scope.selectedId,
+                    onSelected: _onDesktopLibrarySelected,
+                    padding: EdgeInsets.only(top: showLibraryBack ? 8 : 0),
+                  ),
                 ],
               ),
             ),
@@ -719,15 +552,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         Expanded(
           child: LibraryBrowseBody(
             parentId: browseParentId,
-            includeItemTypes: includeItemTypes,
-            searchTerm: _desktopSearchTerm,
             allItems: _libraryBrowseStack.isEmpty ? scope.allItems : null,
             onBrowseIntoFolder: (folder) {
               setState(() {
                 _libraryBrowseStack.add((id: folder.id, name: folder.name));
-                _desktopSearchDebounce?.cancel();
-                _desktopSearchInput = '';
-                _desktopSearchTerm = '';
               });
             },
           ),
@@ -795,28 +623,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 resume ?? const <EmbyMediaItem>[],
                 isLoading: resume == null && resumeAsync.isLoading,
               ),
-        libraryTab: libraries.hasError && libs == null
+        titlesTab: libraries.hasError && libs == null
             ? ErrorView.forHomeSection(
                 error: libraries.error!,
                 section: HomeLoadSection.libraries,
                 onRetry: () => ref.invalidate(embyLibrariesProvider),
                 onOpenSettings: () => context.push('/settings/servers'),
               )
-            : libs != null
-                ? _buildAndroidLibraryTab(context, libs)
-                : const LoadingIndicator.posterGrid(homeRecommendStyle: true),
+            : _buildAndroidMediaTab(context),
       );
     }
 
     return AppShortcuts(
-      onSearch: () {
-        if (_desktopNav == HomePcNavItem.movies ||
-            _desktopNav == HomePcNavItem.series) {
-          _desktopSearchFocusNode.requestFocus();
-          return;
-        }
-        context.push('/search');
-      },
+      onSearch: () => context.push('/search'),
       onSettings: () => _selectDesktopNav(HomePcNavItem.settings),
       onRefresh: _onPullRefresh,
       child: Scaffold(
@@ -826,8 +645,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             HomePcSidebar(
               selected: _desktopNav,
               onHome: () => _selectDesktopNav(HomePcNavItem.home),
-              onMovies: () => _selectDesktopNav(HomePcNavItem.movies),
-              onSeries: () => _selectDesktopNav(HomePcNavItem.series),
+              onTitles: () => _selectDesktopNav(HomePcNavItem.titles),
               onLibrary: () => _selectDesktopNav(HomePcNavItem.library),
               onSettings: () => _selectDesktopNav(HomePcNavItem.settings),
             ),

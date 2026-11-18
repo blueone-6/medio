@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'app_transitions.dart';
 import '../core/layout/platform_layout.dart';
 import '../screens/home_screen.dart';
+import '../screens/library_folders_screen.dart';
 import '../screens/library_screen.dart';
 import '../screens/media_detail_screen.dart';
 import '../screens/exo_player_screen.dart';
@@ -39,6 +40,15 @@ GoRouter createAppRouter() {
         // 不用 fadeThrough：TV 上从登录页 go('/home') 时淡入动画偶发不完成，
         // 子树会一直停在 opacity 0，表现为白屏。
         builder: (context, state) => const HomeScreen(),
+      ),
+      GoRoute(
+        path: '/library',
+        pageBuilder: (context, state) {
+          return AppTransitions.sharedAxis(
+            state,
+            const LibraryFoldersScreen(),
+          );
+        },
       ),
       GoRoute(
         path: '/library/:parentId',

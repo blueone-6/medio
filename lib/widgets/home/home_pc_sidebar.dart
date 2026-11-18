@@ -8,8 +8,7 @@ import 'home_typography.dart';
 
 enum HomePcNavItem {
   home,
-  movies,
-  series,
+  titles,
   library,
   settings,
 }
@@ -19,16 +18,14 @@ class HomePcSidebar extends StatelessWidget {
     super.key,
     required this.selected,
     required this.onHome,
-    required this.onMovies,
-    required this.onSeries,
+    required this.onTitles,
     required this.onLibrary,
     required this.onSettings,
   });
 
   final HomePcNavItem selected;
   final VoidCallback onHome;
-  final VoidCallback onMovies;
-  final VoidCallback onSeries;
+  final VoidCallback onTitles;
   final VoidCallback onLibrary;
   final VoidCallback onSettings;
 
@@ -77,18 +74,11 @@ class HomePcSidebar extends StatelessWidget {
                   onPressed: onHome,
                 ),
                 _NavLink(
-                  icon: Icons.movie_outlined,
-                  selectedIcon: Icons.movie,
-                  label: '电影',
-                  selected: selected == HomePcNavItem.movies,
-                  onPressed: onMovies,
-                ),
-                _NavLink(
-                  icon: Icons.tv_outlined,
-                  selectedIcon: Icons.tv,
-                  label: '电视剧',
-                  selected: selected == HomePcNavItem.series,
-                  onPressed: onSeries,
+                  icon: Icons.local_movies_outlined,
+                  selectedIcon: Icons.local_movies,
+                  label: '影视',
+                  selected: selected == HomePcNavItem.titles,
+                  onPressed: onTitles,
                 ),
                 _NavLink(
                   icon: Icons.video_library_outlined,

@@ -13,13 +13,13 @@ class HomeAndroidShell extends StatefulWidget {
   const HomeAndroidShell({
     super.key,
     required this.homeTab,
-    required this.libraryTab,
+    required this.titlesTab,
     this.initialTabIndex = 0,
     this.hideHomeAppBar = false,
   });
 
   final Widget homeTab;
-  final Widget libraryTab;
+  final Widget titlesTab;
   final int initialTabIndex;
   final bool hideHomeAppBar;
 
@@ -42,7 +42,7 @@ class _HomeAndroidShellState extends State<HomeAndroidShell> {
 
   String get _appBarTitle {
     if (_tabIndex == 0) return '首页';
-    if (_tabIndex == 1) return '媒体库';
+    if (_tabIndex == 1) return '影视';
     return AppFeatures.appName;
   }
 
@@ -61,7 +61,7 @@ class _HomeAndroidShellState extends State<HomeAndroidShell> {
 
     final stackChildren = <Widget>[
       widget.homeTab,
-      widget.libraryTab,
+      widget.titlesTab,
     ];
 
     final destinations = <NavigationDestination>[
@@ -71,9 +71,9 @@ class _HomeAndroidShellState extends State<HomeAndroidShell> {
         label: '首页',
       ),
       const NavigationDestination(
-        icon: Icon(Icons.folder_outlined),
-        selectedIcon: Icon(Icons.folder_rounded),
-        label: '媒体库',
+        icon: Icon(Icons.local_movies_outlined),
+        selectedIcon: Icon(Icons.local_movies),
+        label: '影视',
       ),
       const NavigationDestination(
         icon: Icon(Icons.menu_rounded),
@@ -179,6 +179,14 @@ class _HomeMoreDrawer extends StatelessWidget {
               ),
             ),
             const Divider(height: 1),
+            _DrawerTile(
+              icon: Icons.folder_outlined,
+              label: '媒体库',
+              onTap: () {
+                onClose();
+                context.push('/library');
+              },
+            ),
             _DrawerTile(
               icon: Icons.settings_outlined,
               label: '设置',

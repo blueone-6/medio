@@ -13,14 +13,21 @@ import 'tv_library_browse_grid.dart';
 class TvPaginatedLibraryBrowse extends ConsumerStatefulWidget {
   const TvPaginatedLibraryBrowse({
     super.key,
-    required this.parentId,
+    this.parentId,
     this.includeItemTypes,
+    this.searchTerm,
+    this.sortBy,
+    this.sortOrder,
     this.allItems,
     this.onBrowseIntoFolder,
   });
 
-  final String parentId;
+  /// 为 null 时查询全部媒体库（不传 ParentId）。
+  final String? parentId;
   final String? includeItemTypes;
+  final String? searchTerm;
+  final String? sortBy;
+  final String? sortOrder;
   final List<EmbyMediaItem>? allItems;
   final void Function(EmbyMediaItem folder)? onBrowseIntoFolder;
 
@@ -58,7 +65,7 @@ class _TvPaginatedLibraryBrowseState
     _firstPageSpan = PerfTracer.start(
       'tv.library.first_page',
       context: {
-        'parentId': widget.parentId,
+        'parentId': widget.parentId ?? '',
         'types': widget.includeItemTypes ?? '',
       },
     );
@@ -70,6 +77,9 @@ class _TvPaginatedLibraryBrowseState
     super.didUpdateWidget(oldWidget);
     if (oldWidget.parentId != widget.parentId ||
         oldWidget.includeItemTypes != widget.includeItemTypes ||
+        oldWidget.searchTerm != widget.searchTerm ||
+        oldWidget.sortBy != widget.sortBy ||
+        oldWidget.sortOrder != widget.sortOrder ||
         oldWidget.allItems != widget.allItems) {
       _firstPageSpan?.end(extraContext: {'first_page_via': 'cancelled'});
       final syntheticItems = widget.allItems;
@@ -88,7 +98,7 @@ class _TvPaginatedLibraryBrowseState
       _firstPageSpan = PerfTracer.start(
         'tv.library.first_page',
         context: {
-          'parentId': widget.parentId,
+          'parentId': widget.parentId ?? '',
           'types': widget.includeItemTypes ?? '',
         },
       );
@@ -119,8 +129,9 @@ class _TvPaginatedLibraryBrowseState
             : TvPaginatedLibraryBrowse.pageSize,
         includeItemTypes: widget.includeItemTypes,
         recursive: _filtered,
-        sortBy: _filtered ? 'SortName' : null,
-        sortOrder: _filtered ? 'Ascending' : null,
+        sortBy: widget.sortBy ?? (_filtered ? 'SortName' : null),
+        sortOrder: widget.sortOrder ?? (_filtered ? 'Ascending' : null),
+        searchTerm: widget.searchTerm,
       );
       if (!mounted) return;
       setState(() {

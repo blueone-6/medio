@@ -8,6 +8,7 @@ import '../../services/emby_service.dart';
 import '../../utils/library_selection.dart';
 import '../../widgets/empty_state_view.dart';
 import '../../widgets/library/library_root_picker.dart';
+import '../../widgets/library/media_browse_view.dart';
 import '../../widgets/tv/tv_error_panel.dart';
 import '../../widgets/loading_indicator.dart';
 import '../../widgets/tv/tv_continue_section.dart';
@@ -51,8 +52,7 @@ class _TvHomeShellState extends ConsumerState<TvHomeShell> {
   TvNavItem _nav = TvNavItem.home;
 
   final _browseTabKeys = <TvNavItem, GlobalKey<_TvBrowseTabPaneState>>{
-    TvNavItem.movies: GlobalKey<_TvBrowseTabPaneState>(),
-    TvNavItem.series: GlobalKey<_TvBrowseTabPaneState>(),
+    TvNavItem.titles: GlobalKey<_TvBrowseTabPaneState>(),
     TvNavItem.library: GlobalKey<_TvBrowseTabPaneState>(),
   };
 
@@ -80,8 +80,7 @@ class _TvHomeShellState extends ConsumerState<TvHomeShell> {
             TvSidebarNav(
               selected: _nav,
               onHome: () => _selectNav(TvNavItem.home),
-              onMovies: () => _selectNav(TvNavItem.movies),
-              onSeries: () => _selectNav(TvNavItem.series),
+              onTitles: () => _selectNav(TvNavItem.titles),
               onLibrary: () => _selectNav(TvNavItem.library),
               onSearch: () => context.push('/search'),
               onSettings: () => context.push('/settings'),
@@ -110,18 +109,8 @@ class _TvHomeShellState extends ConsumerState<TvHomeShell> {
                           ),
                           _TvShellKeepAliveTab(
                             child: _TvBrowseTabPane(
-                              key: _browseTabKeys[TvNavItem.movies],
-                              nav: TvNavItem.movies,
-                              libraries: widget.libraries,
-                              librariesLoading: widget.librariesLoading,
-                              librariesError: widget.librariesError,
-                              onRetryLibraries: widget.onRetryLibraries,
-                            ),
-                          ),
-                          _TvShellKeepAliveTab(
-                            child: _TvBrowseTabPane(
-                              key: _browseTabKeys[TvNavItem.series],
-                              nav: TvNavItem.series,
+                              key: _browseTabKeys[TvNavItem.titles],
+                              nav: TvNavItem.titles,
                               libraries: widget.libraries,
                               librariesLoading: widget.librariesLoading,
                               librariesError: widget.librariesError,
@@ -257,9 +246,7 @@ class _TvBrowseTabPane extends StatefulWidget {
 }
 
 class _TvBrowseTabPaneState extends State<_TvBrowseTabPane> {
-  String? _selectedMovieLibraryId;
-  String? _selectedSeriesLibraryId;
-  String? _selectedAllLibraryId;
+  String? _selectedLibraryId;
   final _browseStack = <({String id, String name})>[];
 
   bool popStack() {
@@ -268,61 +255,20 @@ class _TvBrowseTabPaneState extends State<_TvBrowseTabPane> {
     return true;
   }
 
-  String? _libraryTypes() {
-    switch (widget.nav) {
-      case TvNavItem.movies:
-        return 'Movie';
-      case TvNavItem.series:
-        return 'Series';
-      case TvNavItem.library:
-      case TvNavItem.home:
-        return null;
-    }
-  }
-
   void _onLibrarySelected(String libraryId) {
     setState(() {
-      switch (widget.nav) {
-        case TvNavItem.movies:
-          _selectedMovieLibraryId = libraryId;
-          break;
-        case TvNavItem.series:
-          _selectedSeriesLibraryId = libraryId;
-          break;
-        case TvNavItem.library:
-        case TvNavItem.home:
-          _selectedAllLibraryId = libraryId;
-          break;
-      }
+      _selectedLibraryId = libraryId;
       _browseStack.clear();
     });
   }
 
   LibraryScope _libraryScope() {
-    switch (widget.nav) {
-      case TvNavItem.movies:
-        return buildLibraryScope(
-          libraries: widget.libraries,
-          selectedLibraryId: _selectedMovieLibraryId,
-          allLabel: '全部电影',
-          collectionTypes: const {'movies'},
-        );
-      case TvNavItem.series:
-        return buildLibraryScope(
-          libraries: widget.libraries,
-          selectedLibraryId: _selectedSeriesLibraryId,
-          allLabel: '全部电视剧',
-          collectionTypes: const {'tvshows'},
-        );
-      case TvNavItem.library:
-      case TvNavItem.home:
-        return buildLibraryScope(
-          libraries: widget.libraries,
-          selectedLibraryId: _selectedAllLibraryId,
-          allLabel: '全部媒体库',
-          includeAll: true,
-        );
-    }
+    return buildLibraryScope(
+      libraries: widget.libraries,
+      selectedLibraryId: _selectedLibraryId,
+      allLabel: '全部媒体库',
+      includeAll: true,
+    );
   }
 
   void _onBrowseIntoFolder(EmbyMediaItem folder) {
@@ -372,7 +318,16 @@ class _TvBrowseTabPaneState extends State<_TvBrowseTabPane> {
     final browseParentId = _browseStack.isEmpty
         ? (scope.selectedParentId ?? '')
         : _browseStack.last.id;
-    final types = _libraryTypes();
+
+    // 影视页：卡片 + 分类筛选（内部自带类型切换），不再走文件夹层级
+    if (widget.nav == TvNavItem.titles) {
+      return Padding(
+        padding: padding,
+        child: FocusTraversalGroup(
+          child: const MediaBrowseView(tv: true, showSearch: false),
+        ),
+      );
+    }
 
     return Padding(
       padding: padding,
@@ -389,9 +344,8 @@ class _TvBrowseTabPaneState extends State<_TvBrowseTabPane> {
             Expanded(
               child: LibraryBrowseBody(
                 key: ValueKey(
-                    'tv-browse-${widget.nav}-$browseParentId-$types-${scope.selectedId}'),
+                    'tv-browse-${widget.nav}-$browseParentId-${scope.selectedId}'),
                 parentId: browseParentId,
-                includeItemTypes: types,
                 allItems: _browseStack.isEmpty ? scope.allItems : null,
                 onBrowseIntoFolder: _onBrowseIntoFolder,
               ),

@@ -12,9 +12,11 @@ import '../widgets/media_grid.dart';
 import '../widgets/tv/tv_paginated_library_browse.dart';
 
 EmbyLibraryListArg libraryItemsQuery(
-  String parentId,
+  String? parentId,
   String? itemsQuery, {
   String? searchTerm,
+  String? sortBy,
+  String? sortOrder,
 }) {
   final types = itemsQuery?.trim();
   final filtered = types != null && types.isNotEmpty;
@@ -24,8 +26,8 @@ EmbyLibraryListArg libraryItemsQuery(
     includeItemTypes: filtered ? types : null,
     recursive: filtered || (term != null && term.isNotEmpty),
     limit: filtered ? 500 : 50,
-    sortBy: filtered ? 'SortName' : null,
-    sortOrder: filtered ? 'Ascending' : null,
+    sortBy: sortBy ?? (filtered ? 'SortName' : null),
+    sortOrder: sortOrder ?? (filtered ? 'Ascending' : null),
     searchTerm: term != null && term.isNotEmpty ? term : null,
   );
 }
@@ -37,17 +39,24 @@ class LibraryBrowseBody extends ConsumerWidget {
     required this.parentId,
     this.includeItemTypes,
     this.searchTerm,
+    this.sortBy,
+    this.sortOrder,
     this.allItems,
     this.onBrowseIntoFolder,
   });
 
-  final String parentId;
+  /// 为 null 时查询全部媒体库（不传 ParentId）。
+  final String? parentId;
 
   /// Emby `IncludeItemTypes` (e.g. `Movie`, `Series`) with recursive listing, matching emby_client.
   final String? includeItemTypes;
 
   /// Optional inline search term for filtering this library pane in place.
   final String? searchTerm;
+
+  /// 排序字段/方向；为空时沿用默认（过滤视图按 SortName 升序）。
+  final String? sortBy;
+  final String? sortOrder;
 
   /// Synthetic top-level entries for "all libraries" scopes.
   final List<EmbyMediaItem>? allItems;
@@ -61,6 +70,8 @@ class LibraryBrowseBody extends ConsumerWidget {
       parentId,
       includeItemTypes,
       searchTerm: searchTerm,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
     );
     final term = searchTerm?.trim();
     final isSearching = term != null && term.isNotEmpty;
@@ -78,10 +89,13 @@ class LibraryBrowseBody extends ConsumerWidget {
     if (isTv) {
       return TvPaginatedLibraryBrowse(
         key: ValueKey(
-          '$parentId-${includeItemTypes ?? ''}-${searchTerm ?? ''}-${syntheticItems?.length ?? 0}',
+          '${parentId ?? ''}-${includeItemTypes ?? ''}-${searchTerm ?? ''}-${sortBy ?? ''}-${sortOrder ?? ''}-${syntheticItems?.length ?? 0}',
         ),
         parentId: parentId,
         includeItemTypes: includeItemTypes,
+        searchTerm: searchTerm,
+        sortBy: sortBy,
+        sortOrder: sortOrder,
         allItems: syntheticItems,
         onBrowseIntoFolder: onBrowseIntoFolder,
       );
