@@ -159,7 +159,7 @@ class _TvFocusRingState extends State<TvFocusRing> {
 
         scale: active && widget.scaleFocused ? TvHomeLayout.focusScale : 1.0,
 
-        duration: AppMotion.fast,
+        duration: AppMotion.effectiveDuration(context, AppMotion.fast),
 
         curve: AppMotion.emphasized,
 
@@ -189,7 +189,7 @@ class _TvFocusRingState extends State<TvFocusRing> {
 
                   child: AnimatedContainer(
 
-                    duration: AppMotion.fast,
+                    duration: AppMotion.effectiveDuration(context, AppMotion.fast),
 
                     curve: AppMotion.emphasized,
 

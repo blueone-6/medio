@@ -31,7 +31,7 @@ class TvLibraryBrowseGrid extends StatefulWidget {
   final VoidCallback? onNearEnd;
 
   static const visibleRows = 2;
-  static const _titleBandHeight = 22.0;
+  static const _titleBandHeight = 26.0;
 
   @override
   State<TvLibraryBrowseGrid> createState() => _TvLibraryBrowseGridState();

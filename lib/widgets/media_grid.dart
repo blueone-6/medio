@@ -16,6 +16,63 @@ int mediaGridCrossAxisCountForWidth(
   return n.clamp(1, 12);
 }
 
+/// 海报网格几何（列数 / 瓦片尺寸 / 内边距）。
+///
+/// 分页网格、骨架与单行居中都必须走同一份计算，否则加载态与结果态、
+/// 标题与内容会各自算出不同的左边缘。
+class MediaGridMetrics {
+  const MediaGridMetrics({
+    required this.columns,
+    required this.tileWidth,
+    required this.tileHeight,
+    required this.contentWidth,
+    required this.spacing,
+    required this.horizontalPadding,
+  });
+
+  final int columns;
+  final double tileWidth;
+  final double tileHeight;
+  final double contentWidth;
+  final double spacing;
+  final double horizontalPadding;
+}
+
+MediaGridMetrics resolveMediaGridMetrics(
+  BuildContext context, {
+  required double availableWidth,
+  int? crossAxisCount,
+  bool homeRecommendStyle = false,
+  bool pcRecommendStyle = false,
+  double? maxContentWidth,
+  double? horizontalPadding,
+}) {
+  final horizontalPad = horizontalPadding ?? horizontalPaddingOf(context);
+  const gridSpacing = HomeLayout.gridGap;
+  final contentW = maxContentWidth == null
+      ? availableWidth
+      : availableWidth.clamp(0.0, maxContentWidth);
+  final gridW = (contentW - horizontalPad * 2).clamp(0.0, double.infinity);
+  final count = crossAxisCount ??
+      mediaGridCrossAxisCountForWidth(
+        gridW,
+        minTileWidth: posterMinTileWidthOf(context),
+        spacing: gridSpacing,
+      );
+  final tileW = count > 0 ? (gridW - gridSpacing * (count - 1)) / count : gridW;
+  final tileH = homeRecommendStyle
+      ? HomeLayout.recommendGridCellHeight(tileW, pcStyle: pcRecommendStyle)
+      : mediaCardGridCellHeight(context, tileW);
+  return MediaGridMetrics(
+    columns: count,
+    tileWidth: tileW,
+    tileHeight: tileH,
+    contentWidth: contentW,
+    spacing: gridSpacing,
+    horizontalPadding: horizontalPad,
+  );
+}
+
 class MediaGrid extends StatelessWidget {
   const MediaGrid({
     super.key,
@@ -46,20 +103,23 @@ class MediaGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final horizontalPad = horizontalPadding ?? horizontalPaddingOf(context);
-    const gridSpacing = HomeLayout.gridGap;
-    final minTileWidth = posterMinTileWidthOf(context);
     return LayoutBuilder(
       builder: (context, constraints) {
-        final contentW = maxContentWidth == null
-            ? constraints.maxWidth
-            : constraints.maxWidth.clamp(0.0, maxContentWidth!);
-        final gridW = (contentW - horizontalPad * 2).clamp(0.0, double.infinity);
-        final count = crossAxisCount ?? mediaGridCrossAxisCountForWidth(gridW, minTileWidth: minTileWidth, spacing: gridSpacing);
-        final tileW = (gridW - gridSpacing * (count - 1)) / count;
-        final tileH = homeRecommendStyle
-            ? HomeLayout.recommendGridCellHeight(tileW, pcStyle: pcRecommendStyle)
-            : mediaCardGridCellHeight(context, tileW);
+        final metrics = resolveMediaGridMetrics(
+          context,
+          availableWidth: constraints.maxWidth,
+          crossAxisCount: crossAxisCount,
+          homeRecommendStyle: homeRecommendStyle,
+          pcRecommendStyle: pcRecommendStyle,
+          maxContentWidth: maxContentWidth,
+          horizontalPadding: horizontalPadding,
+        );
+        final count = metrics.columns;
+        final tileW = metrics.tileWidth;
+        final tileH = metrics.tileHeight;
+        const gridSpacing = HomeLayout.gridGap;
+        final horizontalPad = metrics.horizontalPadding;
+        final contentW = metrics.contentWidth;
         final grid = GridView.builder(
           padding: EdgeInsets.fromLTRB(horizontalPad, paddingTop, horizontalPad, 8),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -124,21 +184,23 @@ class MediaGridSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final horizontalPad = horizontalPadding ?? horizontalPaddingOf(context);
-    const gridSpacing = HomeLayout.gridGap;
-    final minTileWidth = posterMinTileWidthOf(context);
     return LayoutBuilder(
       builder: (context, constraints) {
-        final contentW = maxContentWidth == null
-            ? constraints.maxWidth
-            : constraints.maxWidth.clamp(0.0, maxContentWidth!);
-        final gridW = (contentW - horizontalPad * 2).clamp(0.0, double.infinity);
-        final count = crossAxisCount ?? mediaGridCrossAxisCountForWidth(gridW,
-            minTileWidth: minTileWidth, spacing: gridSpacing);
-        final tileW = (gridW - gridSpacing * (count - 1)) / count;
-        final tileH = homeRecommendStyle
-            ? HomeLayout.recommendGridCellHeight(tileW, pcStyle: pcRecommendStyle)
-            : mediaCardGridCellHeight(context, tileW);
+        final metrics = resolveMediaGridMetrics(
+          context,
+          availableWidth: constraints.maxWidth,
+          crossAxisCount: crossAxisCount,
+          homeRecommendStyle: homeRecommendStyle,
+          pcRecommendStyle: pcRecommendStyle,
+          maxContentWidth: maxContentWidth,
+          horizontalPadding: horizontalPadding,
+        );
+        final count = metrics.columns;
+        final tileW = metrics.tileWidth;
+        final tileH = metrics.tileHeight;
+        const gridSpacing = HomeLayout.gridGap;
+        final horizontalPad = metrics.horizontalPadding;
+        final contentW = metrics.contentWidth;
         // Skeleton grids often sit inside CustomScrollView / Column — must not
         // claim unbounded viewport height.
         final grid = GridView.builder(

@@ -89,6 +89,9 @@ class _HomeAndroidShellState extends State<HomeAndroidShell> {
           : AppBar(
               title: Text(_appBarTitle),
               actions: [
+                // 「影视」页自带就地筛选搜索，AppBar 再放一个会让人以为
+                // 两个搜索是同一件事（页内过滤 vs 全站搜索）。
+                if (_tabIndex != 1)
                 IconButton(
                   tooltip: '搜索',
                   icon: const Icon(Icons.search_rounded),

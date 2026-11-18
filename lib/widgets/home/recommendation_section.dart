@@ -684,7 +684,7 @@ class _HomeRecommendCardState extends ConsumerState<HomeRecommendCard> {
                     builder: (context, hovered, child) {
                       final d = AppMotion.effectiveDuration(context, AppMotion.base);
                       return AnimatedScale(
-                        scale: hovered ? 1.03 : 1.0,
+                        scale: hovered ? 1.04 : 1.0,
                         duration: d,
                         curve: AppMotion.decelerate,
                         alignment: Alignment.center,
@@ -742,8 +742,8 @@ class _HomeRecommendCardState extends ConsumerState<HomeRecommendCard> {
                   height: HomeLayout.posterSubtitleLineHeight,
                   fontWeight: FontWeight.w500,
                   // 0.24 (px-equivalent) 太宽，副文案在小字号下显疏；统一 0.02em 节奏。
-                  letterSpacing: 0.02 * HomeLayout.posterSubtitleFontSize,
-                  color: cs.onSurfaceVariant.withValues(alpha: 0.6),
+                  letterSpacing: 0,
+                  color: cs.onSurfaceVariant,
                 ),
               ),
           ],

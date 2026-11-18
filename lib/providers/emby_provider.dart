@@ -31,7 +31,10 @@ typedef EmbyLibraryListArg = ({
   String? searchTerm,
 });
 
-final embyLibraryItemsProvider = FutureProvider.family<List<EmbyMediaItem>, EmbyLibraryListArg>((ref, arg) {
+/// `autoDispose`：搜索逐键会生成新的 family key，缓存无界会让每个按键的
+/// 整库结果常驻内存；不再被 watch 时立刻释放。
+final embyLibraryItemsProvider =
+    FutureProvider.autoDispose.family<List<EmbyMediaItem>, EmbyLibraryListArg>((ref, arg) {
   return ref.watch(embyServiceProvider).getItems(
         parentId: arg.parentId,
         includeItemTypes: arg.includeItemTypes,

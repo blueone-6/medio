@@ -71,7 +71,7 @@ class TvGridPosterCard extends StatelessWidget {
             item.mediaCardDisplayTitle,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: HomeTypography.captionXs(cs.onSurface),
+            style: HomeTypography.bodyMdSemibold(cs.onSurface),
           ),
         ],
       ),

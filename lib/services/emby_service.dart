@@ -22,6 +22,9 @@ import '../utils/playback_http_headers.dart';
 import '../utils/stream_redirect.dart';
 import 'settings_service.dart';
 
+/// 一页 Emby 条目及服务端总数（`TotalRecordCount`）。
+typedef EmbyItemsPage = ({List<EmbyMediaItem> items, int total});
+
 /// Emby REST client (paths relative to `{server}/emby`).
 class EmbyService {
   EmbyService(this._settings) : _dio = createDio();
@@ -196,6 +199,39 @@ class EmbyService {
     String? searchTerm,
     bool enableUserData = false,
   }) async {
+    final page = await getItemsPage(
+      parentId: parentId,
+      startIndex: startIndex,
+      limit: limit,
+      includeItemTypes: includeItemTypes,
+      recursive: recursive,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+      years: years,
+      filters: filters,
+      searchTerm: searchTerm,
+      enableUserData: enableUserData,
+    );
+    return page.items;
+  }
+
+  /// 一页条目 + Emby 的 `TotalRecordCount`。
+  ///
+  /// 分页浏览必须知道总数，否则「只显示前 N 条」对用户是静默截断。
+  /// 服务端未返回总数时回退为该页条数。
+  Future<EmbyItemsPage> getItemsPage({
+    String? parentId,
+    int startIndex = 0,
+    int limit = 50,
+    String? includeItemTypes,
+    bool recursive = false,
+    String? sortBy,
+    String? sortOrder,
+    String? years,
+    String? filters,
+    String? searchTerm,
+    bool enableUserData = false,
+  }) async {
     final userId = _settings.embyUserId;
     if (userId == null) throw ApiException('Not logged in');
     _dio.options.baseUrl = _embyRoot;
@@ -219,7 +255,10 @@ class EmbyService {
         options: Options(headers: await _embyRequestHeaders()),
       );
       final items = res.data?['Items'] as List<dynamic>? ?? [];
-      return items.map((e) => EmbyMediaItem.fromJson(e as Map<String, dynamic>)).toList();
+      final parsed =
+          items.map((e) => EmbyMediaItem.fromJson(e as Map<String, dynamic>)).toList();
+      final total = (res.data?['TotalRecordCount'] as num?)?.toInt() ?? parsed.length;
+      return (items: parsed, total: total);
     } on DioException catch (e) {
       throwApiException(e);
     }

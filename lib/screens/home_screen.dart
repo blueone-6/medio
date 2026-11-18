@@ -51,6 +51,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _appStartupPerfFinished = false;
   bool _isRefreshing = false;
 
+  /// 桌面「影视」/媒体库页内嵌分页网格的刷新信号。
+  int _browseRefreshToken = 0;
+
   @override
   void initState() {
     super.initState();
@@ -137,17 +140,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ref.read(homeRecommendationProvider.future),
         ]);
       } else if (_desktopNav == HomePcNavItem.titles && libs.isNotEmpty) {
-        // 影视页自行管理分类/排序，这里只需让列表重新拉取
-        ref.invalidate(embyLibraryItemsProvider);
+        // 影视页自行分页：递增 token 让内嵌分页网格重拉第一页。
+        if (mounted) setState(() => _browseRefreshToken++);
       } else if (libs.isNotEmpty) {
         final scope = _desktopLibraryScope(libs);
         if (scope.selectedParentId != null || _libraryBrowseStack.isNotEmpty) {
-          final browseId = _libraryBrowseStack.isEmpty
-              ? scope.selectedParentId!
-              : _libraryBrowseStack.last.id;
-          final query = libraryItemsQuery(browseId, null);
-          ref.invalidate(embyLibraryItemsProvider(query));
-          await ref.read(embyLibraryItemsProvider(query).future);
+          // 媒体库面板同样走分页网格：用同一个 token 触发重拉。
+          if (mounted) setState(() => _browseRefreshToken++);
         }
       }
       if (!mounted) return;
@@ -397,16 +396,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       case HomePcNavItem.settings:
         return _buildDesktopSettingsPane();
       case HomePcNavItem.titles:
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(
-            HomeLayout.horizontalMargin,
-            HomeLayout.pcSectionGap,
-            HomeLayout.horizontalMargin,
-            0,
-          ),
-          child: _buildDesktopFillPane(
-            child: const MediaBrowseView(),
-          ),
+        return _buildDesktopFillPane(
+          child: const MediaBrowseView(),
         );
       case HomePcNavItem.library:
         final scope = _desktopLibraryScope(libraries);
@@ -553,6 +544,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           child: LibraryBrowseBody(
             parentId: browseParentId,
             allItems: _libraryBrowseStack.isEmpty ? scope.allItems : null,
+            refreshToken: _browseRefreshToken,
             onBrowseIntoFolder: (folder) {
               setState(() {
                 _libraryBrowseStack.add((id: folder.id, name: folder.name));
